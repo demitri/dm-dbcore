@@ -1,3 +1,7 @@
+# IDEs and AI agents
+.nova
+.claude
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
