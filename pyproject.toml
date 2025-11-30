@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dm-dbcore"
+version = "0.1.0"
+description = "SQLAlchemy database connection wrapper with metadata caching and multi-database support"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "Demitri Muna", email = "pypi@nightlightresearch.com"}
+]
+keywords = ["sqlalchemy", "database", "postgresql", "mysql", "sqlite", "orm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "sqlalchemy>=2.0.0",
+]
+
+[project.optional-dependencies]
+postgresql = ["psycopg2-binary>=2.9.0"]
+mysql = ["pymysql>=1.0.0"]
+numpy = ["numpy>=1.20.0"]
+astronomy = ["numpy>=1.20.0", "cornish"]
+dev = ["pytest>=7.0", "black", "flake8"]
+
+[project.urls]
+Homepage = "https://github.com/demitri/dm-dbcore"
+"Bug Reports" = "https://github.com/demitri/dm-dbcore/issues"
+"Source" = "https://github.com/demitri/dm-dbcore"
+
+[tool.setuptools]
+packages = ["dm_dbcore", "dm_dbcore.adapters", "dm_dbcore.mysql"]
