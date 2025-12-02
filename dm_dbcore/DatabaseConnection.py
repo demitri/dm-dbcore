@@ -351,22 +351,28 @@ class DatabaseConnection(object):
 				result = conn.execute(text('SELECT 1'))
 				result.fetchone()
 
-				# For informational purposes, try to get database name
+				# For informational purposes, try to get database name and user
 				# This helps identify which database we're actually connected to
 				try:
 					if database_type == DBTYPE_POSTGRESQL:
-						db_result = conn.execute(text('SELECT current_database()'))
-						db_name = db_result.scalar()
+						db_result = conn.execute(text('SELECT current_user, current_database()'))
+						row = db_result.fetchone()
+						db_user = row[0]
+						db_name = row[1]
 					elif database_type == DBTYPE_MYSQL:
-						db_result = conn.execute(text('SELECT DATABASE()'))
-						db_name = db_result.scalar()
+						db_result = conn.execute(text('SELECT USER(), DATABASE()'))
+						row = db_result.fetchone()
+						db_user = row[0].split('@')[0] if row[0] else 'unknown'  # Extract user from 'user@host'
+						db_name = row[1]
 					elif database_type == DBTYPE_SQLITE:
 						# SQLite doesn't have a database name query
+						db_user = 'sqlite'
 						db_name = 'sqlite'
 					else:
+						db_user = 'unknown'
 						db_name = 'unknown'
 
-					logger.info(f"Database connection validated successfully: connected to '{db_name}'")
+					logger.info(f"Database connection validated successfully: connected to '{db_user}@{db_name}'")
 				except Exception:
 					# If we can't get the DB name, that's OK - we're already connected
 					logger.info("Database connection validated successfully")
