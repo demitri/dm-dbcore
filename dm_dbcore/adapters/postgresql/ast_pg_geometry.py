@@ -16,7 +16,7 @@ USAGE:
 Example usage, e.g. at the top of a ModelClasses file:
 
 from sqlalchemy.dialects.postgresql import base as pg
-from dm_dbcore.adapters.ast_pg_geometry import PGASTCircle, PGASTPolygon
+from dm_dbcore.adapters.postgresql.ast_pg_geometry import PGASTCircle, PGASTPolygon
 pg.ischema_names['circle'] = PGASTCircle
 pg.ischema_names['polygon'] = PGASTPolygon
 

@@ -49,7 +49,7 @@ mapper_registry = registry()
 #    __table_args__ = {'schema': 'myschema', 'autoload': True}
 #
 # 2. CUSTOM TYPES - Point, Polygon (via dm-dbcore adapters)
-#    from dm_dbcore.adapters.pggeometry import PGPoint, PGPolygon
+#    from dm_dbcore.adapters.postgresql.pggeometry import PGPoint, PGPolygon
 #    location = Column(PGPoint)
 #
 # 3. ARRAYS - Store arrays of values
@@ -253,7 +253,7 @@ class Tag:
 # =============================================================================
 # Uncomment if you need PostGIS geometric types
 
-# from dm_dbcore.adapters.pggeometry import PGPoint, PGPolygon
+# from dm_dbcore.adapters.postgresql.pggeometry import PGPoint, PGPolygon
 #
 # @mapper_registry.mapped
 # class Location:

@@ -1,5 +1,12 @@
 #!/usr/bin/python
 
+"""
+Backup of the psycopg2-based NumPy PostgreSQL adapter.
+
+This file preserves the pre-psycopg3 implementation for reference.
+The active adapter is now in numpy_postgresql.py (psycopg v3).
+"""
+
 '''
 This module translates NumPy values to values that psycopg2 can understand.
 By default, psycopg2 doesn't know about NumPy data types; this allows one
@@ -168,17 +175,3 @@ if using_psycopg2 and numpy_available:
 # 		return np.load(bdata)
 # 	type_numpy_array = psycopg2.extensions.new_type(psycopg2.BINARY.values, "numpy array", typecast_numpy_array)
 # 	psycopg2.extensions.register_type(type_nunpy_array)
-
-
-
-
-
-
-
-
-
-
-
-
-
-

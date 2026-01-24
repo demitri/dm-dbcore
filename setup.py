@@ -41,7 +41,7 @@ setup(
         "sqlalchemy>=2.0.0",
     ],
     extras_require={
-        "postgresql": ["psycopg2-binary>=2.9.0"],
+        "postgresql": ["psycopg[binary]>=3.0"],
         "mysql": ["pymysql>=1.0.0"],
         "numpy": ["numpy>=1.20.0"],
         "dev": ["pytest>=7.0", "black", "flake8"],

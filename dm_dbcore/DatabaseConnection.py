@@ -319,7 +319,7 @@ class DatabaseConnection(object):
 		:return: One of the DBTYPE_* constants
 		:raises ValueError: if database type cannot be determined from connection string
 		'''
-		if self.database_connection_string.startswith('postgresql://'):
+		if self.database_connection_string.startswith('postgresql+psycopg://'):
 			return DBTYPE_POSTGRESQL
 		elif self.database_connection_string.startswith('mysql://'):
 			return DBTYPE_MYSQL
@@ -328,7 +328,7 @@ class DatabaseConnection(object):
 		else:
 			raise ValueError(
 				f"Unable to determine database type from connection string: '{self.database_connection_string}'. "
-				f"Connection string must start with one of: 'postgresql://', 'mysql://', or 'sqlite://'"
+				f"Connection string must start with one of: 'postgresql+psycopg://', 'mysql://', or 'sqlite://'"
 			)
 
 	@staticmethod
@@ -429,13 +429,17 @@ class DatabaseConnection(object):
 
 		This includes NumPy adapters and custom geometric types (POINT, POLYGON).
 		'''
-		from .adapters import numpy_postgresql
-		from .adapters.pggeometry import PGPoint, PGPolygon
+		from .adapters.postgresql import numpy_postgresql
+		from .adapters.postgresql.pggeometry import PGPoint, PGPolygon, PGCircle
+		from .adapters.postgresql.pgcitext import PGCitext
 		from sqlalchemy.dialects.postgresql import base as pg
 
 		# Register PostgreSQL custom types
 		pg.ischema_names['point'] = PGPoint
 		pg.ischema_names['polygon'] = PGPolygon
+		pg.ischema_names['circle'] = PGCircle
+		pg.ischema_names['citext'] = PGCitext
+		pg.ischema_names['core.citext'] = PGCitext
 
 	@staticmethod
 	def load_mysql_database_adapters():
@@ -451,7 +455,7 @@ class DatabaseConnection(object):
 		'''
 		Load SQLite-specific database adapters.
 		'''
-		from .adapters import numpy_sqlite
+		from .adapters.sqlite import numpy_sqlite
 
 	def __new__(cls, database_connection_string=None, cache_name=None):
 		"""This overrides the object's usual creation mechanism."""
@@ -576,10 +580,6 @@ CREATE EVENT TRIGGER tr_notice_alter_table
 -- Command to delete the trigger.
 DROP EVENT TRIGGER tr_notice_alter_table;
 '''
-
-
-
-
 
 
 

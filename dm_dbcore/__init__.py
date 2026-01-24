@@ -16,7 +16,7 @@ Example usage:
     >>>
     >>> # Create connection (first time only)
     >>> db = DatabaseConnection(
-    ...     database_connection_string='postgresql://user:pass@localhost/mydb',
+    ...     database_connection_string='postgresql+psycopg://user:pass@localhost/mydb',
     ...     cache_name='myapp_cache.pkl'
     ... )
     >>>

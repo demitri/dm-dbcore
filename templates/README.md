@@ -427,7 +427,7 @@ with session_scope(db) as session:
 PostgreSQL custom types (Point, Polygon) are automatically registered by dm-dbcore:
 
 ```python
-from dm_dbcore.adapters.pggeometry import PGPoint, PGPolygon
+from dm_dbcore.adapters.postgresql.pggeometry import PGPoint, PGPolygon
 
 location = Column(PGPoint)
 boundary = Column(PGPolygon)

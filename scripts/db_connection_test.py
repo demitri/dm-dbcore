@@ -38,7 +38,7 @@ except ImportError as e:
     print("     - Model classes are configured automatically on import\n")
     print("Or use dm-dbcore directly for testing:")
     print("  from dm_dbcore import DatabaseConnection, session_scope")
-    print("  db = DatabaseConnection('postgresql://user:pass@localhost/mydb')")
+    print("  db = DatabaseConnection('postgresql+psycopg://user:pass@localhost/mydb')")
     print("  # Then use session_scope(db) for queries\n")
     sys.exit(1)
 

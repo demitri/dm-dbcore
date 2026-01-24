@@ -50,7 +50,7 @@ def test_connection_module():
 
         # For this demo, create connection directly
         # TODO: Update with your database credentials
-        connection_string = 'postgresql://user:password@localhost/testdb'
+        connection_string = 'postgresql+psycopg://user:password@localhost/testdb'
         # Or: connection_string = 'mysql://user:password@localhost/testdb'
         # Or: connection_string = 'sqlite:///test.db'
 
@@ -253,7 +253,7 @@ def demonstrate_usage_patterns():
     DB_USER = 'myuser'
 
     def get_database_connection():
-        connection_string = f'postgresql://{DB_USER}@{DB_HOST}/{DB_DATABASE}'
+        connection_string = f'postgresql+psycopg://{DB_USER}@{DB_HOST}/{DB_DATABASE}'
         return DatabaseConnection(
             database_connection_string=connection_string,
             cache_name='myproject_metadata.pkl'

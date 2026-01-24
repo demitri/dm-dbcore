@@ -40,12 +40,14 @@ except ImportError:
 	np = None
 
 try:
-	from psycopg2.extensions import register_adapter, AsIs
-	_PSYCOPG2_AVAILABLE = True
+	from psycopg.adapt import Dumper, register_dumper
+	from psycopg import pq
+	_PSYCOPG_AVAILABLE = True
 except ImportError:
-	_PSYCOPG2_AVAILABLE = False
-	register_adapter = None
-	AsIs = None
+	_PSYCOPG_AVAILABLE = False
+	register_dumper = None
+	Dumper = None
+	pq = None
 
 class PGPoint(types.UserDefinedType):
 	'''
@@ -75,6 +77,16 @@ class PGPoint(types.UserDefinedType):
 
 	def get_col_spec(self, **kw):
 		return "POINT"
+
+
+class PGCircle(types.UserDefinedType):
+	'''
+	Class to represent the PostgreSQL "CIRCLE" datatype (flat geometry).
+
+	https://www.postgresql.org/docs/current/datatype-geometric.html#DATATYPE-CIRCLE
+	'''
+	def get_col_spec(self, **kw):
+		return "CIRCLE"
 
 	def bind_processor(self, dialect):
 		'''
@@ -190,20 +202,30 @@ The code below is needed to support the creation of the user types directly in u
 
 p = PGPolygon(points)
 
-Now, "p" can be passed directly to psycopg2 as a PostgreSQL POLYGON value.
+Now, "p" can be passed directly to psycopg as a PostgreSQL POLYGON value.
 '''
-def adapt_polygon(value):
- 	'''
- 	Return this value when psycopg2 is given a PGPolygon object.
- 	'''
- 	return AsIs(value.sql_string)
+def _polygon_literal(points) -> str:
+	"""Return the PostgreSQL text literal for a polygon."""
+	if _NUMPY_AVAILABLE and isinstance(points, np.ndarray):
+		points_iter = points.tolist()
+	else:
+		points_iter = points
 
-def adapt_point(value):
-	'''
- 	Return this value when psycopg2 is given a PGPoint object.
-	'''
-	return AsIs(value.sql_string)
+	return "(" + ",".join(f"({x},{y})" for x, y in points_iter) + ")"
 
-register_adapter(PGPoint, adapt_point)
-register_adapter(PGPolygon, adapt_polygon)
 
+if _PSYCOPG_AVAILABLE:
+	class _PGPointDumper(Dumper):
+		format = pq.Format.TEXT
+
+		def dump(self, obj):
+			return f"({obj.x},{obj.y})".encode()
+
+	class _PGPolygonDumper(Dumper):
+		format = pq.Format.TEXT
+
+		def dump(self, obj):
+			return _polygon_literal(obj.points).encode()
+
+	register_dumper(PGPoint, _PGPointDumper)
+	register_dumper(PGPolygon, _PGPolygonDumper)

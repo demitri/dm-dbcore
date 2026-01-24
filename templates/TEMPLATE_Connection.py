@@ -84,10 +84,10 @@ def build_connection_string():
     if DATABASE_TYPE == DBTYPE_POSTGRESQL:
         # PostgreSQL connection string
         if DB_PASSWORD:
-            return f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_DATABASE}'
+            return f'postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_DATABASE}'
         else:
             # Use ~/.pgpass for password
-            return f'postgresql://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_DATABASE}'
+            return f'postgresql+psycopg://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_DATABASE}'
 
     elif DATABASE_TYPE == DBTYPE_MYSQL:
         # MySQL connection string

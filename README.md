@@ -57,7 +57,7 @@ from sqlalchemy import text
 
 # Create connection (first time only, required on first call)
 db = DatabaseConnection(
-    database_connection_string='postgresql://user:pass@localhost/mydb',
+    database_connection_string='postgresql+psycopg://user:pass@localhost/mydb',
     cache_name='myapp_cache.pkl'  # Optional: enables metadata caching
 )
 
@@ -77,7 +77,7 @@ with session_scope(db) as session:
 from dm_dbcore import DatabaseConnection, DBTYPE_POSTGRESQL, DBTYPE_MYSQL, DBTYPE_SQLITE
 
 # PostgreSQL
-db = DatabaseConnection('postgresql://user:pass@localhost/mydb')
+db = DatabaseConnection('postgresql+psycopg://user:pass@localhost/mydb')
 
 # MySQL
 db = DatabaseConnection('mysql://user:pass@localhost/mydb')
@@ -105,7 +105,7 @@ class User(Base):
     email = Column(String(100))
 
 # Create connection with metadata
-db = DatabaseConnection('postgresql://user:pass@localhost/mydb')
+db = DatabaseConnection('postgresql+psycopg://user:pass@localhost/mydb')
 
 # Bind models to the connection's metadata
 Base.metadata.bind = db.engine
@@ -124,7 +124,7 @@ Metadata caching dramatically improves application startup time by storing SQLAl
 ```python
 # Enable caching by providing a cache filename
 db = DatabaseConnection(
-    database_connection_string='postgresql://localhost/mydb',
+    database_connection_string='postgresql+psycopg://localhost/mydb',
     cache_name='myapp_metadata.pkl'
 )
 
@@ -146,7 +146,7 @@ db = DatabaseConnection(
 from dm_dbcore import DatabaseConnection
 from contextlib import contextmanager
 
-db = DatabaseConnection('postgresql://localhost/mydb')
+db = DatabaseConnection('postgresql+psycopg://localhost/mydb')
 
 @contextmanager
 def my_session():
@@ -174,7 +174,7 @@ When you install with NumPy support, you can store/retrieve NumPy arrays:
 from dm_dbcore import DatabaseConnection
 import numpy as np
 
-db = DatabaseConnection('postgresql://localhost/mydb')
+db = DatabaseConnection('postgresql+psycopg://localhost/mydb')
 # NumPy adapters are automatically loaded for PostgreSQL
 
 # Arrays are automatically converted to/from database format
@@ -246,12 +246,15 @@ dm_dbcore/
 ├── session_scope         # Context manager
 ├── DBTYPE_*              # Database type constants
 ├── adapters/             # Custom type adapters
-│   ├── PGPoint           # PostgreSQL Point type
-│   ├── PGPolygon         # PostgreSQL Polygon type
-│   ├── PGASTCircle       # Astronomy Circle (requires cornish)
-│   ├── PGASTPolygon      # Astronomy Polygon (requires cornish)
-│   ├── numpy_postgresql  # NumPy array adapters for PostgreSQL
-│   └── numpy_sqlite      # NumPy array adapters for SQLite
+│   ├── postgresql/       # PostgreSQL adapters
+│   │   ├── PGPoint       # PostgreSQL Point type
+│   │   ├── PGPolygon     # PostgreSQL Polygon type
+│   │   ├── PGASTCircle   # Astronomy Circle (requires cornish)
+│   │   ├── PGASTPolygon  # Astronomy Polygon (requires cornish)
+│   │   ├── PGCitext      # PostgreSQL citext type
+│   │   └── numpy_postgresql  # NumPy array adapters for PostgreSQL
+│   └── sqlite/           # SQLite adapters
+│       └── numpy_sqlite  # NumPy array adapters for SQLite
 └── mysql/                # MySQL utilities
     ├── read_password_from_my_cnf
     └── read_connection_options_from_my_cnf
@@ -349,7 +352,7 @@ Read all connection options from MySQL configuration file.
 - Python 3.8+
 - SQLAlchemy 2.0+
 - Database drivers:
-  - PostgreSQL: `psycopg2-binary` or `psycopg2`
+  - PostgreSQL: `psycopg[binary]`
   - MySQL: `pymysql` or `mysqlclient`
   - SQLite: Built into Python
 - Optional dependencies:
@@ -372,4 +375,4 @@ Demitri Muna
 
 - GitHub: https://github.com/demitri/dm-dbcore
 - PyPI: https://pypi.org/project/dm-dbcore/
-- Issues: https://github.com/demitri/dm-dbcore/issues
+- Issues: https://github.com/demitri/dm-dbcore/issues 
