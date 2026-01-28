@@ -6,6 +6,8 @@ import sqlalchemy.types as types
 class PGCitext(types.UserDefinedType):
     """PostgreSQL CITEXT type (case-insensitive text)."""
 
+    cache_ok = True
+
     def get_col_spec(self, **kwargs):
         return "citext"
 
