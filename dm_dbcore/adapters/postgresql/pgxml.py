@@ -1,15 +1,15 @@
-"""SQLAlchemy adapter for PostgreSQL CITEXT type."""
+"""SQLAlchemy adapter for PostgreSQL XML type."""
 
 import sqlalchemy.types as types
 
 
-class PGCIText(types.UserDefinedType):
-    """PostgreSQL CITEXT type (case-insensitive text)."""
+class PGXML(types.UserDefinedType):
+    """PostgreSQL XML type (native XML storage)."""
 
     cache_ok = True
 
     def get_col_spec(self, **kwargs):
-        return "citext"
+        return "xml"
 
     def bind_processor(self, dialect):
         return None

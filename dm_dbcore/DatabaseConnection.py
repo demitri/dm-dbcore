@@ -431,15 +431,17 @@ class DatabaseConnection(object):
 		'''
 		from .adapters.postgresql import numpy_postgresql
 		from .adapters.postgresql.pggeometry import PGPoint, PGPolygon, PGCircle
-		from .adapters.postgresql.pgcitext import PGCitext
+		from .adapters.postgresql.pgcitext import PGCIText
+		from .adapters.postgresql.pgxml import PGXML
 		from sqlalchemy.dialects.postgresql import base as pg
 
 		# Register PostgreSQL custom types
 		pg.ischema_names['point'] = PGPoint
 		pg.ischema_names['polygon'] = PGPolygon
 		pg.ischema_names['circle'] = PGCircle
-		pg.ischema_names['citext'] = PGCitext
-		pg.ischema_names['core.citext'] = PGCitext
+		pg.ischema_names['citext'] = PGCIText
+		pg.ischema_names['core.citext'] = PGCIText
+		pg.ischema_names['xml'] = PGXML
 
 	@staticmethod
 	def load_mysql_database_adapters():

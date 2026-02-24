@@ -251,7 +251,8 @@ dm_dbcore/
 │   │   ├── PGPolygon     # PostgreSQL Polygon type
 │   │   ├── PGASTCircle   # Astronomy Circle (requires cornish)
 │   │   ├── PGASTPolygon  # Astronomy Polygon (requires cornish)
-│   │   ├── PGCitext      # PostgreSQL citext type
+│   │   ├── PGCIText      # PostgreSQL citext type
+│   │   ├── PGXML         # PostgreSQL xml type
 │   │   └── numpy_postgresql  # NumPy array adapters for PostgreSQL
 │   └── sqlite/           # SQLite adapters
 │       └── numpy_sqlite  # NumPy array adapters for SQLite

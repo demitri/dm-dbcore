@@ -5,11 +5,13 @@ This module provides SQLAlchemy adapters for:
 - NumPy arrays (PostgreSQL and SQLite)
 - PostgreSQL geometric types (Point, Polygon, Circle)
 - PostgreSQL CITEXT (case-insensitive text)
+- PostgreSQL XML (native XML storage)
 
 Available adapters:
 - PGPoint, PGPolygon: Standard PostgreSQL geometric types
 - PGASTCircle, PGASTPolygon: Astronomy-specific types (requires cornish)
-- PGCitext: PostgreSQL citext type
+- PGCIText: PostgreSQL citext type
+- PGXML: PostgreSQL xml type
 
 Example:
     from dm_dbcore.adapters import PGPoint, PGPolygon
@@ -20,7 +22,7 @@ Example:
 """
 
 # Import PostgreSQL adapter symbols
-from .postgresql import PGPoint, PGPolygon, PGCircle, PGCitext
+from .postgresql import PGPoint, PGPolygon, PGCircle, PGCIText, PGXML
 
 # Try to import astronomy types - fail silently if cornish not available
 try:
@@ -35,7 +37,8 @@ __all__ = [
     "PGPoint",
     "PGPolygon",
     "PGCircle",
-    "PGCitext",
+    "PGCIText",
+    "PGXML",
     "PGASTCircle",
     "PGASTPolygon",
     # Submodules
