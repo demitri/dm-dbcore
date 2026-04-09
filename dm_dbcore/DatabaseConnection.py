@@ -372,10 +372,10 @@ class DatabaseConnection(object):
 						db_user = 'unknown'
 						db_name = 'unknown'
 
-					logger.info(f"Database connection validated successfully: connected to '{db_user}@{db_name}'")
+					logger.debug(f"Database connection validated successfully: connected to '{db_user}@{db_name}'")
 				except Exception:
 					# If we can't get the DB name, that's OK - we're already connected
-					logger.info("Database connection validated successfully")
+					logger.debug("Database connection validated successfully")
 
 			return True
 
