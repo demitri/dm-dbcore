@@ -29,10 +29,29 @@ the opposite of what the packaging declares, and is why this went unnoticed.
 - [ ] The diagnostic scripts tell MySQL users to put their password in
       `~/.my.cnf`, but in URL mode they hand the URL straight to
       `DatabaseConnection`, and pymysql does not read `~/.my.cnf` (unlike libpq
-      and `~/.pgpass`). Either call `read_password_from_my_cnf()` in URL mode or
-      say that MySQL users must use `--module` mode. See
-      `scripts/db_connection_test.py` and `scripts/test_dm_dbcore.py`.
-      (codex round 3)
+      and `~/.pgpass`). See `scripts/db_connection_test.py` and
+      `scripts/test_dm_dbcore.py`. (codex round 3)
+
+### Make ~/.my.cnf just work — the code should figure it out
+
+The asymmetry is the problem: PostgreSQL users get `~/.pgpass` for free because
+libpq reads it, so they write no password and it works. MySQL users are told
+about `~/.my.cnf` and then have to wire it up themselves, which is exactly the
+kind of boilerplate this package exists to delete.
+
+- [ ] When the URL is MySQL and carries no password, dm-dbcore should look one
+      up itself via `read_password_from_my_cnf(host=..., user=...)` — matching
+      on the URL's host/user — before handing the URL to SQLAlchemy. Then MySQL
+      behaves like PostgreSQL: omit the password, it works.
+- [ ] Do as much as can be inferred: default the section to `[client]`, fall
+      back to any matching entry, honour host/user wildcards, and take
+      host/port/user/database from `~/.my.cnf` when the URL omits them
+      (`read_connection_options_from_my_cnf` already exists for this).
+- [ ] Fail loudly, not silently: if a password is genuinely required and no
+      `~/.my.cnf` entry matches, say so — naming the file, section, host and
+      user searched — rather than letting the connection fail with a bare
+      "Access denied".
+- [ ] Ask before caching credentials anywhere. Read at connect, do not persist.
 
 ## Unify db.metadata, Base.metadata, and SCHEMA (metadata caching)
 

@@ -148,6 +148,41 @@ CASES = [
         "    return Table('widget')\n",
         False, set(), id="param-shadows-import",
     ),
+    # Re-importing over an alias rebinds it.
+    pytest.param(
+        "from sqlalchemy import Table as T\n"
+        "from widgets import Table as T\n"
+        "T('widget')\n",
+        False, set(), id="reimport-shadows-alias",
+    ),
+    pytest.param(
+        "import sqlalchemy as sa\nimport widgets as sa\nsa.Table('t')\n",
+        False, set(), id="reimport-module-alias",
+    ),
+    # Other binding forms.
+    pytest.param(
+        "from sqlalchemy import Table as T\nT: object = widget_factory\nT('widget')\n",
+        False, set(), id="annassign-shadows-alias",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table as T\nT, U = widget_factory, 1\nT('widget')\n",
+        False, set(), id="tuple-unpack-shadows-alias",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table\n"
+        "def Table(name):\n    return name\n"
+        "Table('widget')\n",
+        False, set(), id="def-shadows-import",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table\n"
+        "class Table:\n    '''mine'''\n    x = 1\n",
+        False, set(), id="class-shadows-import",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table as T\nfor T in items:\n    T('widget')\n",
+        False, set(), id="for-target-shadows-alias",
+    ),
 ]
 
 

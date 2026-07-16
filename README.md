@@ -5,12 +5,13 @@ A SQLAlchemy database connection wrapper with metadata caching, multi-database s
 ## Features
 
 - **Singleton connection management** - One database connection per application
-- **Metadata caching** - Automatic SQLAlchemy metadata caching for faster startup
 - **Multi-database support** - Works with PostgreSQL, MySQL, and SQLite
+- **Reflection-first models** - The database defines the schema; your classes reflect it
 - **Custom type adapters** - NumPy arrays, PostgreSQL geometric types (Point, Polygon, Circle)
 - **MySQL utilities** - Read credentials from `.my.cnf` files
-- **Automatic staleness detection** - Cache invalidation when schema changes
 - **Context managers** - Safe transactional operations with `session_scope()`
+- **Metadata caching** - *experimental, off by default*; see
+  [Metadata Caching](#metadata-caching-experimental) for what it does and does not cover
 
 ## Installation
 
@@ -57,8 +58,7 @@ from sqlalchemy import text
 
 # Create connection (first time only, required on first call)
 db = DatabaseConnection(
-    database_connection_string='postgresql+psycopg://user:pass@localhost/mydb',
-    cache_name='myapp_cache.pkl'  # Optional: enables metadata caching
+    database_connection_string='postgresql+psycopg://user:pass@localhost/mydb'
 )
 
 # Subsequent calls return the same instance (no parameters needed)
@@ -76,11 +76,14 @@ with session_scope(db) as session:
 ```python
 from dm_dbcore import DatabaseConnection, DBTYPE_POSTGRESQL, DBTYPE_MYSQL, DBTYPE_SQLITE
 
-# PostgreSQL
+# PostgreSQL -- psycopg v3. A bare 'postgresql://' is REJECTED: SQLAlchemy
+# silently resolves it to the deprecated psycopg2.
 db = DatabaseConnection('postgresql+psycopg://user:pass@localhost/mydb')
 
-# MySQL
-db = DatabaseConnection('mysql://user:pass@localhost/mydb')
+# MySQL -- name the driver. A bare 'mysql://' resolves to mysqldb
+# (mysqlclient), which this package does not install; the [mysql] extra
+# installs pymysql.
+db = DatabaseConnection('mysql+pymysql://user:pass@localhost/mydb')
 
 # SQLite
 db = DatabaseConnection('sqlite:///path/to/database.db')

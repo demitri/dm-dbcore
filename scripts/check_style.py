@@ -83,6 +83,22 @@ def _is_sqlalchemy_module(module: str) -> bool:
     return bool(module) and (module == "sqlalchemy" or module.startswith("sqlalchemy."))
 
 
+def _bound_names(target: ast.expr) -> Iterator[str]:
+    """Yield every local name bound by an assignment target.
+
+    Covers plain names, tuple/list unpacking, and starred targets, so that
+    `T, U = ...` rebinds both. Attribute and subscript targets (`obj.x = ...`)
+    bind nothing locally and are skipped.
+    """
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            yield from _bound_names(element)
+    elif isinstance(target, ast.Starred):
+        yield from _bound_names(target.value)
+
+
 def _assigns_name(stmt: ast.stmt, name: str) -> bool:
     if isinstance(stmt, ast.Assign):
         return any(isinstance(t, ast.Name) and t.id == name for t in stmt.targets)
@@ -124,7 +140,12 @@ class StyleChecker(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if not _is_sqlalchemy_module(node.module):
-            # Not SQLAlchemy: none of these rules apply to it.
+            # Not SQLAlchemy: none of these rules apply. Importing over an
+            # existing binding rebinds it, though -- after
+            # `from widgets import Table as T`, T is widgets', not ours.
+            for alias in node.names:
+                if alias.name != "*":
+                    self._unbind(alias.asname or alias.name)
             self.generic_visit(node)
             return
 
@@ -153,6 +174,8 @@ class StyleChecker(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if not _is_sqlalchemy_module(alias.name):
+                # Rebinds the local name away from SQLAlchemy.
+                self._unbind(alias.asname or alias.name.split(".")[0])
                 continue
             if alias.asname:
                 # `import sqlalchemy.orm as so` binds "so".
@@ -173,29 +196,42 @@ class StyleChecker(ast.NodeVisitor):
             and self._resolve_call(node.value) == "registry"
         )
         for target in node.targets:
-            if not isinstance(target, ast.Name):
-                continue
-            if is_registry:
-                self.sa_registries.add(target.id)
-            else:
-                # Rebinding shadows the import: after `T = widget_factory`,
-                # `T(...)` is no longer sqlalchemy.Table. Without this the maps
-                # only ever grew and kept flagging the new, unrelated T.
-                self._unbind(target.id)
+            for name in _bound_names(target):
+                if is_registry:
+                    self.sa_registries.add(name)
+                else:
+                    # Rebinding shadows the import: after `T = widget_factory`,
+                    # `T(...)` is no longer sqlalchemy.Table. Without this the
+                    # maps only ever grew and kept flagging the unrelated T.
+                    self._unbind(name)
         self.generic_visit(node)
 
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        for name in _bound_names(node.target):
+            self._unbind(name)
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For) -> None:
+        for name in _bound_names(node.target):
+            self._unbind(name)
+        self.generic_visit(node)
+
+    visit_AsyncFor = visit_For
+
     def _unbind(self, name: str) -> None:
-        """Forget a SQLAlchemy binding whose local name has been reassigned."""
+        """Forget a SQLAlchemy binding whose local name has been rebound."""
         self.sa_names.pop(name, None)
         self.sa_modules.pop(name, None)
         self.sa_registries.discard(name)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        # A parameter shadows a module-level import for the body of the
-        # function. Unbinding is one-way (this gate does not model scopes), so
-        # a shadowed name stays unbound afterwards -- it under-reports rather
-        # than crying wolf, which is the safer direction for a name a reader
-        # would not expect to be SQLAlchemy's anyway.
+        # The function's own name binds it: `def Table(): ...` shadows the
+        # import. So do its parameters, for the body.
+        #
+        # Unbinding is one-way -- this gate does not model scopes -- so a name
+        # shadowed inside a function stays unbound afterwards. That
+        # under-reports rather than crying wolf, which is the safe direction.
+        self._unbind(node.name)
         args = node.args
         for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
             self._unbind(arg.arg)
@@ -300,6 +336,9 @@ class StyleChecker(ast.NodeVisitor):
     # -- classes -------------------------------------------------------------
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # `class Table: ...` shadows the import from here on.
+        self._unbind(node.name)
+
         for dec in node.decorator_list:
             if self._is_sa_mapped_decorator(dec):
                 self.report(
