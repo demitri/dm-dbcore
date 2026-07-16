@@ -145,17 +145,18 @@ class MetadataCache():
 		import hashlib
 
 		with self.databaseConnection.engine.connect() as connection:
-			# Get current schema (or use specific schema if needed)
-			schema = connection.execute(text("SELECT current_schema()")).scalar()
-
-			# Hash table names + column definitions
+			# Hash every user schema, not current_schema(). This class clears the
+			# search_path on every connection (see clearSearchPathCallback), so
+			# current_schema() returns NULL -- `WHERE table_schema = NULL` matched
+			# no rows and the hash was a constant over an empty set, identical for
+			# every database and blind to every DDL change.
 			query = text("""
-				SELECT table_name, column_name, data_type, is_nullable
+				SELECT table_schema, table_name, column_name, data_type, is_nullable
 				FROM information_schema.columns
-				WHERE table_schema = :schema
-				ORDER BY table_name, ordinal_position
+				WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+				ORDER BY table_schema, table_name, ordinal_position
 			""")
-			results = connection.execute(query, {"schema": schema})
+			results = connection.execute(query)
 
 			# Create hash of table structure
 			hash_input = ""
@@ -251,44 +252,40 @@ class MetadataCache():
 		'''
 		Write the SQLAlchemy metadata to a pickle file.
 		For PostgreSQL and MySQL, also writes a hash file to track schema changes.
-		:param metadata:
+
+		Raises rather than swallowing failures. Caching is opt-in -- the caller
+		asked for it by passing `cache_name` -- so silently not doing it is not a
+		kindness. This method previously wrapped its whole body in a bare
+		`except: pass`, and the hash writes in their own `except: warning`. Both
+		mattered: with no hash file, cacheIsStale() reports stale forever, the
+		cache is deleted on every read, and caching silently never happens.
+
+		:param metadata: the SQLAlchemy MetaData to persist
 		'''
-		try:
-			cache_dir = os.path.join(os.path.expanduser("~"), ".sqlalchemy_cache")
-			if not os.path.exists(cache_dir):
-				os.makedirs(cache_dir)
+		cache_dir = pathlib.Path(self.cache_directory)
+		cache_dir.mkdir(parents=True, exist_ok=True)
 
-			# Write pickle file
-			with open(os.path.join(cache_dir, self.filename), 'wb') as cache_file:
-				pickle.dump(metadata, cache_file)
-			logger.info("Metadata cache written.")
+		# Write pickle file
+		with open(cache_dir / self.filename, 'wb') as cache_file:
+			pickle.dump(metadata, cache_file)
+		logger.info(f"Metadata cache written: {self.cachePath}")
 
-			# For PostgreSQL and MySQL, write hash file
-			if self.databaseConnection.database_type == DBTYPE_POSTGRESQL:
-				try:
-					current_hash = self._compute_postgresql_schema_hash()
-					hash_file = self.cachePath.with_suffix('.hash')
-					with open(hash_file, 'w') as f:
-						f.write(current_hash)
-					logger.info("PostgreSQL schema hash written.")
-				except Exception as e:
-					logger.warning(f"Could not write PostgreSQL schema hash: {e}")
+		# For PostgreSQL and MySQL, write the companion hash file used by
+		# cacheIsStale(). SQLite has no staleness detection, so it has no hash.
+		schema_hash = None
+		if self.databaseConnection.database_type == DBTYPE_POSTGRESQL:
+			schema_hash = self._compute_postgresql_schema_hash()
+		elif self.databaseConnection.database_type == DBTYPE_MYSQL:
+			schema_hash = self._compute_mysql_schema_hash()
 
-			elif self.databaseConnection.database_type == DBTYPE_MYSQL:
-				try:
-					current_hash = self._compute_mysql_schema_hash()
-					hash_file = self.cachePath.with_suffix('.hash')
-					with open(hash_file, 'w') as f:
-						f.write(current_hash)
-					logger.info("MySQL schema hash written.")
-				except Exception as e:
-					logger.warning(f"Could not write MySQL schema hash: {e}")
+		if schema_hash is not None:
+			hash_file = self.cachePath.with_suffix('.hash')
+			with open(hash_file, 'w') as f:
+				f.write(schema_hash)
+			logger.info(f"Schema hash written: {hash_file}")
 
-			for t in metadata.tables.keys():
-				logger.debug(f"    - {t}")
-		except:
-			# couldn't write the file for some reason
-			pass
+		for t in metadata.tables.keys():
+			logger.debug(f"    - {t}")
 
 
 class DatabaseConnection(object):
@@ -497,10 +494,13 @@ class DatabaseConnection(object):
 			}
 			# pool_size=?? # number of permanent database connections
 
-			# Database-specific parameters:
-			if me.database_type == DBTYPE_MYSQL:
-				# Force TCP connection for MySQL to avoid Unix socket connection attempts
-				engine_kwargs['connect_args'] = {'host': '127.0.0.1'}
+			# NOTE: MySQL previously forced connect_args={'host': '127.0.0.1'}
+			# here, intending to avoid Unix-socket connections. SQLAlchemy merges
+			# connect_args AFTER parsing the URL, so it overrode whatever host the
+			# caller configured and silently sent every MySQL connection to
+			# localhost. Removed: the host in the URL is the host. To use a Unix
+			# socket, say so in the URL (?unix_socket=/path); to force TCP, name a
+			# host or 127.0.0.1 there.
 
 			me.engine = create_engine(me.database_connection_string, **engine_kwargs)
 
@@ -515,6 +515,7 @@ class DatabaseConnection(object):
 				) from e
 
 			me.metadata = None
+			me.metadataCache = None
 
 			# Load pickle'd metadata or create it from the database.
 			if cache_name:
@@ -522,13 +523,17 @@ class DatabaseConnection(object):
 				me.metadataCache.read()
 				if me.metadataCache.metadata is not None:
 					me.metadata = me.metadataCache.metadata
-#			else:
-#				me.metadataCache = None
 
 			if me.metadata is None:
-				# create here, reflected from database
+				# Not cached (or the cache was stale): reflect from the database.
 				me.metadata = MetaData()
 				me.metadata.reflect(bind=me.engine) # optionally can reflect specific tables
+
+				# Persist it. Without this the cache was never written, so
+				# `cache_name` bought nothing: every startup re-reflected and
+				# read() found nothing to load.
+				if me.metadataCache is not None:
+					me.metadataCache.write(me.metadata)
 
 			me.Session = scoped_session(sessionmaker(me.engine))
 

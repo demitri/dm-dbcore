@@ -26,6 +26,65 @@ is not.
 Note: pymysql is NOT installed on the development machine; mysqldb IS. That is
 the opposite of what the packaging declares, and is why this went unnoticed.
 
+## Unify db.metadata, Base.metadata, and SCHEMA (metadata caching)
+
+Raised by codex review of 07ebc8c..04539a3. The caching *machinery* is now fixed
+and verified — `MetadataCache.write()` is actually called (it never was, so
+`cache_name` bought nothing), and the PostgreSQL staleness hash no longer derives
+from `current_schema()`, which returns NULL once the search_path is cleared and
+made the hash a constant over an empty set. An `ALTER TABLE` is now correctly
+detected as stale.
+
+What remains is a design decision, not a defect:
+
+`DatabaseConnection` reflects `db.metadata` from the database's DEFAULT schema.
+With the search_path cleared that is empty, so for any project using a named
+schema the cache stores nothing. Meanwhile the model templates reflect through
+`Base.metadata` with `autoload_with=`, which the cache does not cover at all. So
+caching cannot currently speed up the thing it exists to speed up.
+
+- [ ] Decide the shape. Options: have `DatabaseConnection` reflect the configured
+      schema(s) rather than the default; or let a project's `Base` share
+      `db.metadata` so that autoload_with= populates the cached object; or drop
+      the caching feature. Each has consequences for the three-layer pattern in
+      AI_DB_CONNECTION_PATTERN.md.
+- [ ] `TEMPLATE_Connection.py`'s CACHE_NAME comment currently documents this
+      limitation honestly. Rewrite it once the design is settled.
+
+## Singleton keying (codex, higher-level)
+
+`DatabaseConnection._singletons` is keyed by class only, and the instance is
+stored BEFORE initialization completes:
+
+- two different URLs in one process silently share the first connection, which
+  undercuts the advertised multi-database support;
+- a failed initialization leaves a partially built singleton behind (e.g. a bad
+  connection string raises from `determine_database_type()` *after* the instance
+  is registered), so retrying with corrected credentials returns the broken one.
+
+- [ ] Key by normalized URL, or drop the singleton and let SQLAlchemy's engine
+      pooling handle reuse. Either way, do not register the instance until
+      __new__ has succeeded.
+
+## Pre-existing silent skips in DatabaseConnection.py
+
+Found by the mandatory silent-skip pre-pass. Not introduced by this work, but in
+files it touched. `MetadataCache.write()`'s bare `except: pass` was fixed as part
+of making caching work; these remain:
+
+- [ ] `clearSearchPathCallback` (~line 53): `except Exception: pass`, commented
+      "silently skip". It uses exceptions to sniff "is this PostgreSQL?", so a
+      genuine PostgreSQL error (permissions, dead connection) is swallowed
+      identically. `DatabaseConnection` already knows `database_type` — it does
+      not need to guess by failure. This is the same pattern that hid the dead
+      psycopg dumper registrations for the life of the package.
+- [ ] `cacheIsStale` (~lines 217, 243): `except Exception: logger.warning(...);
+      return True`. Warning-level logging is not a remediation. Fail direction is
+      safe (treat as stale) but a permission error is permanent and unreported.
+- [ ] `MetadataCache.read` (~line 183): `except IOError: return`. Also
+      inconsistent — `pickle.load` raises `UnpicklingError`, not `IOError`, so a
+      corrupt cache propagates while an unreadable one is swallowed.
+
 ## Astronomy geometric types (cornish)
 
 - [ ] `PGASTCircle` and `PGASTPolygon` do not set `cache_ok`, so SQLAlchemy emits

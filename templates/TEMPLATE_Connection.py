@@ -67,8 +67,19 @@ SQLITE_PATH = os.environ.get("MYPROJECT_SQLITE_PATH", "myproject.sqlite")
 #   SQLite:     None. SQLite has no schemas.
 SCHEMA = "myschema"
 
-# Metadata cache filename. Caching reflection makes startup dramatically faster
-# on large schemas. Set to None to disable while a schema is in flux.
+# Metadata cache filename, or None to disable.
+#
+# SCOPE, so this is not mistaken for something it is not: the cache stores
+# `db.metadata`, which DatabaseConnection reflects from the database's DEFAULT
+# schema at connect time. On PostgreSQL the search_path is cleared, so the
+# default schema is empty and there is nothing to cache -- a project using a
+# named SCHEMA (above) gets no benefit today. Your model classes reflect through
+# `Base.metadata` with autoload_with=, which this cache does not cover.
+#
+# It is wired up and correct (staleness is detected from a schema hash and the
+# cache is rebuilt on DDL changes); it just does not yet cover the metadata the
+# model templates actually use. See TODO.md -- unifying db.metadata,
+# Base.metadata, and SCHEMA is a pending design decision.
 CACHE_NAME = "myproject_metadata.pkl"
 
 # =============================================================================
