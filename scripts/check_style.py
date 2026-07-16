@@ -22,6 +22,10 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
   - Connection URLs that are assembled at runtime rather than written as
     literals (f-strings, URL.create(), os.environ values). Only literal strings
     are checked, so a psycopg2 URL built from parts will pass.
+  - Calls whose callee is neither a plain name nor an attribute -- e.g.
+    `factories['Table'](...)` or a Table returned from a helper function.
+    `import X as Y` aliases ARE resolved, but deciding the rest would need full
+    symbol resolution, which this gate does not do.
   - Code inside strings, docstrings, or comments (deliberate: examples in prose
     are not executed).
   - Whether a docstring is accurate, only that model classes have one.
@@ -100,6 +104,10 @@ class StyleChecker(ast.NodeVisitor):
     def __init__(self, path: pathlib.Path):
         self.path = path
         self.violations: List[Violation] = []
+        # Local name -> canonical name, for imports such as
+        # `from sqlalchemy import Table as T`. Without this, `T(...)` would not
+        # match "Table" and the call would silently escape the Table checks.
+        self.aliases: dict = {}
 
     def report(self, node: ast.AST, rule: str, message: str) -> None:
         self.violations.append(
@@ -118,12 +126,25 @@ class StyleChecker(ast.NodeVisitor):
         for alias in node.names:
             if alias.name in LEGACY_ORM_NAMES:
                 self.report(node, "legacy-import", LEGACY_ORM_NAMES[alias.name])
+            # Record `import X as Y` so a renamed Table/Column is still checked.
+            if alias.asname:
+                self.aliases[alias.asname] = alias.name
         self.generic_visit(node)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.asname:
+                self.aliases[alias.asname] = alias.name
+        self.generic_visit(node)
+
+    def _resolve(self, name: str) -> str:
+        """Map a local name back to what it was imported as."""
+        return self.aliases.get(name, name)
 
     # -- calls ---------------------------------------------------------------
 
     def visit_Call(self, node: ast.Call) -> None:
-        name = _call_name(node)
+        name = self._resolve(_call_name(node))
 
         if name in LEGACY_ORM_NAMES:
             self.report(node, "legacy-orm", LEGACY_ORM_NAMES[name])
@@ -216,7 +237,7 @@ class StyleChecker(ast.NodeVisitor):
         value = getattr(stmt, "value", None)
         if not isinstance(value, ast.Call):
             return
-        name = _call_name(value)
+        name = self._resolve(_call_name(value))
         if name in ("Column", "mapped_column"):
             self.report(
                 stmt,
