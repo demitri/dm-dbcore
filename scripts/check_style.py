@@ -26,11 +26,14 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
     `factories['Table'](...)` or a Table returned from a helper function.
     `import X as Y` aliases ARE resolved, but deciding the rest would need full
     symbol resolution, which this gate does not do.
-  - Scope. Bindings are tracked in one flat pass: a name reassigned or shadowed
-    by a function parameter is unbound from that point on, and does not come
-    back afterwards. This under-reports rather than over-reports, which is the
-    safe direction, but a module that rebinds `Table` inside a function and
-    then uses the real one at module level below would go unchecked there.
+  - Scope. Any name the module binds itself -- anywhere, by any means -- is
+    treated as not-SQLAlchemy's everywhere in that file. So a module that does
+    `Table = something` in one function and uses the real `Table` elsewhere
+    goes unchecked in both. Likewise `T = T("t", md)`: the right-hand side is
+    genuinely SQLAlchemy's Table, but `T` is a bound name, so the call is
+    skipped. This under-reports rather than over-reporting, deliberately -- a
+    missed violation costs a review comment; a gate that cries wolf gets turned
+    off. Real model files do not rebind `Table`.
   - Code inside strings, docstrings, or comments (deliberate: examples in prose
     are not executed).
   - Whether a docstring is accurate, only that model classes have one.
@@ -83,20 +86,40 @@ def _is_sqlalchemy_module(module: str) -> bool:
     return bool(module) and (module == "sqlalchemy" or module.startswith("sqlalchemy."))
 
 
-def _bound_names(target: ast.expr) -> Iterator[str]:
-    """Yield every local name bound by an assignment target.
+def _rebound_names(tree: ast.AST) -> set:
+    """Every name the module binds to something of its own.
 
-    Covers plain names, tuple/list unpacking, and starred targets, so that
-    `T, U = ...` rebinds both. Attribute and subscript targets (`obj.x = ...`)
-    bind nothing locally and are skipped.
+    One pass instead of a visitor per binding form. Enumerating the forms --
+    assignment, tuple unpacking, `for`, `with ... as`, `except ... as`, walrus,
+    comprehension targets, `match` captures, `def`, `class` -- was a losing
+    game: four review rounds, four more forms each time. Instead: any name that
+    appears in a Store context anywhere is treated as not-SQLAlchemy's.
+
+    This is deliberately conservative and flat. It ignores scope, so a name
+    rebound anywhere is untrusted everywhere, and it errs toward NOT checking a
+    call rather than wrongly flagging one. Under-reporting is the safe
+    direction: a missed violation costs one review comment, while a gate that
+    cries wolf gets switched off.
     """
-    if isinstance(target, ast.Name):
-        yield target.id
-    elif isinstance(target, (ast.Tuple, ast.List)):
-        for element in target.elts:
-            yield from _bound_names(element)
-    elif isinstance(target, ast.Starred):
-        yield from _bound_names(target.value)
+    names = set()
+    for node in ast.walk(tree):
+        # Covers Assign, AnnAssign, AugAssign, For, With-as, walrus,
+        # comprehension targets, tuple/list unpacking, starred targets --
+        # anything that binds a Name.
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        # `except SomeError as e` -- a bare identifier, not a Name node.
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        # `case Foo() as bar:` / `case bar:` -- also bare identifiers.
+        elif isinstance(node, ast.MatchAs) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchStar) and node.name:
+            names.add(node.name)
+        # `def Table(...)` / `class Table:` shadow an import.
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+    return names
 
 
 def _assigns_name(stmt: ast.stmt, name: str) -> bool:
@@ -130,6 +153,9 @@ class StyleChecker(ast.NodeVisitor):
         # registry()`. Only these make `@x.mapped` a SQLAlchemy decorator --
         # otherwise an unrelated `@app.mapped` would be flagged.
         self.sa_registries: set = set()
+        # Names this module binds itself, from a pre-pass -- see
+        # _rebound_names(). A name in here is never resolved as SQLAlchemy's.
+        self.rebound: set = set()
 
     def report(self, node: ast.AST, rule: str, message: str) -> None:
         self.violations.append(
@@ -190,33 +216,22 @@ class StyleChecker(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         # Track `mapper_registry = registry()` so that only a real SQLAlchemy
-        # registry makes `@mapper_registry.mapped` a violation.
+        # registry makes `@mapper_registry.mapped` a violation, and drop the
+        # name again if it is later reassigned to something else.
         is_registry = (
             isinstance(node.value, ast.Call)
             and self._resolve_call(node.value) == "registry"
         )
         for target in node.targets:
-            for name in _bound_names(target):
+            for sub in ast.walk(target):
+                if not isinstance(sub, ast.Name):
+                    continue
                 if is_registry:
-                    self.sa_registries.add(name)
+                    self.sa_registries.add(sub.id)
                 else:
-                    # Rebinding shadows the import: after `T = widget_factory`,
-                    # `T(...)` is no longer sqlalchemy.Table. Without this the
-                    # maps only ever grew and kept flagging the unrelated T.
-                    self._unbind(name)
-        self.generic_visit(node)
+                    self.sa_registries.discard(sub.id)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        for name in _bound_names(node.target):
-            self._unbind(name)
         self.generic_visit(node)
-
-    def visit_For(self, node: ast.For) -> None:
-        for name in _bound_names(node.target):
-            self._unbind(name)
-        self.generic_visit(node)
-
-    visit_AsyncFor = visit_For
 
     def _unbind(self, name: str) -> None:
         """Forget a SQLAlchemy binding whose local name has been rebound."""
@@ -225,13 +240,8 @@ class StyleChecker(ast.NodeVisitor):
         self.sa_registries.discard(name)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        # The function's own name binds it: `def Table(): ...` shadows the
-        # import. So do its parameters, for the body.
-        #
-        # Unbinding is one-way -- this gate does not model scopes -- so a name
-        # shadowed inside a function stays unbound afterwards. That
-        # under-reports rather than crying wolf, which is the safe direction.
-        self._unbind(node.name)
+        # Parameters shadow an import for the body: `def make(Table)`. The
+        # function's own name is handled by the _rebound_names pre-pass.
         args = node.args
         for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
             self._unbind(arg.arg)
@@ -269,6 +279,9 @@ class StyleChecker(ast.NodeVisitor):
         func = node.func
 
         if isinstance(func, ast.Name):
+            if func.id in self.rebound:
+                # The module binds this name itself, so it is not SQLAlchemy's.
+                return None
             if func.id in self.sa_names:
                 return self.sa_names[func.id]
             if self.sa_star:
@@ -281,7 +294,11 @@ class StyleChecker(ast.NodeVisitor):
             root = func.value
             while isinstance(root, ast.Attribute):
                 root = root.value
-            if isinstance(root, ast.Name) and root.id in self.sa_modules:
+            if (
+                isinstance(root, ast.Name)
+                and root.id not in self.rebound
+                and root.id in self.sa_modules
+            ):
                 return func.attr
             return None
 
@@ -418,6 +435,9 @@ def check_file(path: pathlib.Path) -> List[Violation]:
         ]
 
     checker = StyleChecker(path)
+    # Pre-pass: learn which names the module binds itself, before deciding
+    # which calls are SQLAlchemy's.
+    checker.rebound = _rebound_names(tree)
     checker.visit(tree)
     return checker.violations
 

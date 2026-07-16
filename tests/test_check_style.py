@@ -183,6 +183,34 @@ CASES = [
         "from sqlalchemy import Table as T\nfor T in items:\n    T('widget')\n",
         False, set(), id="for-target-shadows-alias",
     ),
+    # A star import does not make every bare name SQLAlchemy's forever.
+    pytest.param(
+        "from sqlalchemy import *\nTable = widget_factory\nTable('widget')\n",
+        False, set(), id="star-import-then-rebound",
+    ),
+    # Binding forms that used to need a visitor each.
+    pytest.param(
+        "from sqlalchemy import Table as T\nwith ctx() as T:\n    T('widget')\n",
+        False, set(), id="with-as-shadows-alias",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table as T\n"
+        "try:\n    pass\nexcept Exception as T:\n    T('widget')\n",
+        False, set(), id="except-as-shadows-alias",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table as T\nxs = [T('w') for T in items]\n",
+        False, set(), id="comprehension-target-shadows-alias",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table as T\nif (T := widget_factory):\n    T('widget')\n",
+        False, set(), id="walrus-shadows-alias",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table as T\n"
+        "match obj:\n    case T:\n        T('widget')\n",
+        False, set(), id="match-capture-shadows-alias",
+    ),
 ]
 
 
