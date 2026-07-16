@@ -1,257 +1,200 @@
-#!/usr/bin/python
-#
-# TEMPLATE: Database Connection Module
-#
-# This template provides a starting point for creating a database connection
-# module for your project using the dm-dbcore package.
-#
-# =============================================================================
-# TODO CHECKLIST - Update these items before using this file:
-# =============================================================================
-# [ ] 1. Replace 'MYPROJECT' with your actual project name
-# [ ] 2. Update database connection parameters (host, database, user, etc.)
-# [ ] 3. Choose password method: hardcode, environment variable, or password file
-# [ ] 4. Update metadata cache filename
-# [ ] 5. Test connection with test_connection() function
-# [ ] 6. Remove example code and comments when ready for production
-# =============================================================================
+#!/usr/bin/env python
+"""
+TEMPLATE: Database connection module.
+
+Copy this to your project as one file per target database or environment, e.g.
+`myproject/db/connections/LaptopDBConnection.py`. This is Layer 2 of the
+three-layer pattern described in STYLE_GUIDE.md section 1: it owns the
+connection details so that application code never builds URLs or reads password
+files itself.
+
+    project code  ->  this module  ->  dm_dbcore.DatabaseConnection
+
+=============================================================================
+TODO CHECKLIST
+=============================================================================
+[ ] 1. Rename the file for the target it connects to (e.g. SalmonDBConnection.py)
+[ ] 2. Set DB_HOST / DB_PORT / DB_DATABASE / DB_USER below
+[ ] 3. Set SCHEMA to the schema holding your tables (None for SQLite/MySQL)
+[ ] 4. Set CACHE_NAME to something unique to this project
+[ ] 5. Delete the database blocks you do not use
+[ ] 6. Run this file directly to test the connection: python ThisFile.py
+=============================================================================
+"""
 
 import os
-import logging
-from dm_dbcore import DatabaseConnection, session_scope, DBTYPE_POSTGRESQL, DBTYPE_MYSQL, DBTYPE_SQLITE
+from contextlib import contextmanager
 
-logger = logging.getLogger(__name__)
+from sqlalchemy.engine import URL
 
-# =============================================================================
-# DATABASE CONNECTION CONFIGURATION
-# =============================================================================
-
-# TODO: Update these values for your database
-DB_HOST = 'localhost'
-DB_PORT = 5432              # PostgreSQL: 5432, MySQL: 3306
-DB_DATABASE = 'myproject_db'
-DB_USER = 'myproject_user'
+from dm_dbcore import (
+    DatabaseConnection,
+    DBTYPE_MYSQL,
+    DBTYPE_POSTGRESQL,
+    DBTYPE_SQLITE,
+    session_scope as _session_scope,
+)
 
 # =============================================================================
-# PASSWORD CONFIGURATION
+# Configuration
 # =============================================================================
-# Choose ONE of these methods for handling database passwords:
 
-# METHOD 1: Environment variable (recommended for development/containers)
-DB_PASSWORD = os.environ.get('MYPROJECT_DB_PASSWORD', '')
-
-# METHOD 2: Hardcoded (NOT recommended for production!)
-# DB_PASSWORD = 'my_secret_password'
-
-# METHOD 3: Password file (recommended for production)
-# PostgreSQL uses ~/.pgpass format: hostname:port:database:username:password
-# MySQL uses ~/.my.cnf format: [client] section with user/password
-# Leave empty string to use password file
-# DB_PASSWORD = ''
-
-# =============================================================================
-# DATABASE TYPE SELECTION
-# =============================================================================
-# Choose your database type (uncomment one):
-
+# TODO: pick the database this module connects to.
 DATABASE_TYPE = DBTYPE_POSTGRESQL
-# DATABASE_TYPE = DBTYPE_MYSQL
-# DATABASE_TYPE = DBTYPE_SQLITE
+
+# TODO: update for your database. Environment variables let you point the same
+# code at a different server without editing it -- use a project-specific
+# prefix so different projects do not collide.
+DB_HOST = os.environ.get("MYPROJECT_DB_HOST", "localhost")
+DB_PORT = int(os.environ.get("MYPROJECT_DB_PORT", 5432))  # PostgreSQL 5432, MySQL 3306
+DB_DATABASE = os.environ.get("MYPROJECT_DB_DATABASE", "myproject_db")
+DB_USER = os.environ.get("MYPROJECT_DB_USER", "myproject_user")
+
+# Password. Leave this empty to use a password file, which is the recommended
+# route -- see "Passwords" below.
+DB_PASSWORD = os.environ.get("MYPROJECT_DB_PASSWORD", "")
+
+# SQLite only: path to the database file.
+SQLITE_PATH = os.environ.get("MYPROJECT_SQLITE_PATH", "myproject.sqlite")
+
+# The schema holding your tables. Model classes import this and pass it to
+# every Table(...) call, so a project that moves schemas changes one line here.
+#
+#   PostgreSQL: the schema name, e.g. "core". dm-dbcore clears the PostgreSQL
+#               search_path on every connection, so this must be explicit.
+#   MySQL:      None. MySQL has no schemas; the database name in the URL
+#               plays that role.
+#   SQLite:     None. SQLite has no schemas.
+SCHEMA = "myschema"
+
+# Metadata cache filename. Caching reflection makes startup dramatically faster
+# on large schemas. Set to None to disable while a schema is in flux.
+CACHE_NAME = "myproject_metadata.pkl"
 
 # =============================================================================
-# METADATA CACHE CONFIGURATION
+# Passwords
 # =============================================================================
-# Metadata caching dramatically improves startup time
-# Cache files are stored in ~/.sqlalchemy_cache/
-
-# TODO: Update with your project name
-METADATA_CACHE_FILENAME = 'MYPROJECT_metadata.pkl'
-
-# Set to False to disable caching (useful for development when schema changes frequently)
-USE_METADATA_CACHE = True
-
+#
+# Do not hardcode passwords. Both supported servers have a password file:
+#
+# PostgreSQL -- ~/.pgpass, mode 0600, one line per target:
+#
+#     hostname:port:database:username:password
+#
+#   libpq reads this automatically whenever the URL carries no password, so
+#   this module simply omits it. There is nothing to parse and nothing to
+#   configure: leave DB_PASSWORD empty and it works.
+#
+# MySQL -- ~/.my.cnf. pymysql does NOT read it automatically, so dm-dbcore
+#   provides a reader:
+#
+#     from dm_dbcore.mysql import read_password_from_my_cnf
+#     DB_PASSWORD = read_password_from_my_cnf(host=DB_HOST, user=DB_USER)
+#
 # =============================================================================
-# BUILD CONNECTION STRING
-# =============================================================================
 
-def build_connection_string():
-    """
-    Build SQLAlchemy connection string based on database type.
 
-    Returns:
-        str: SQLAlchemy connection string
-    """
+def build_connection_url() -> str:
+    """Build the SQLAlchemy connection URL for the configured database."""
+    if DATABASE_TYPE == DBTYPE_SQLITE:
+        # SQLite is a file: no host, user, or password.
+        return f"sqlite:///{SQLITE_PATH}"
+
     if DATABASE_TYPE == DBTYPE_POSTGRESQL:
-        # PostgreSQL connection string
-        if DB_PASSWORD:
-            return f'postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_DATABASE}'
-        else:
-            # Use ~/.pgpass for password
-            return f'postgresql+psycopg://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_DATABASE}'
-
+        # psycopg v3. Do NOT use "postgresql://" -- it silently selects the
+        # deprecated psycopg2 driver, which dm-dbcore rejects.
+        drivername = "postgresql+psycopg"
     elif DATABASE_TYPE == DBTYPE_MYSQL:
-        # MySQL connection string
-        if DB_PASSWORD:
-            return f'mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_DATABASE}'
-        else:
-            # Use ~/.my.cnf for password
-            return f'mysql+pymysql://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_DATABASE}'
-
-    elif DATABASE_TYPE == DBTYPE_SQLITE:
-        # SQLite connection string (file-based, no user/password)
-        # TODO: Update with your SQLite database path
-        db_path = '/path/to/your/database.db'
-        return f'sqlite:///{db_path}'
-
+        drivername = "mysql+pymysql"
     else:
-        raise ValueError(f"Unknown database type: {DATABASE_TYPE}")
+        raise ValueError(f"Unsupported database type: {DATABASE_TYPE!r}")
+
+    url = URL.create(
+        drivername,
+        username=DB_USER,
+        password=DB_PASSWORD or None,  # None -> let ~/.pgpass supply it
+        host=DB_HOST,
+        port=DB_PORT,
+        database=DB_DATABASE,
+    )
+    return url.render_as_string(hide_password=False)
+
 
 # =============================================================================
-# CONNECTION FACTORY FUNCTIONS
+# The connection
 # =============================================================================
+#
+# DatabaseConnection is a singleton: the first call builds it, later calls
+# return the same object. Calling it with no argument before it exists raises
+# AssertionError, so this module creates it on import and every other module
+# just imports `db` / `Session` from here.
 
-def get_database_connection():
-    """
-    Get or create database connection (singleton pattern).
+db = DatabaseConnection(
+    database_connection_string=build_connection_url(),
+    cache_name=CACHE_NAME,
+)
 
-    On first call, creates the connection with connection string and cache.
-    Subsequent calls return the existing connection.
-
-    Returns:
-        DatabaseConnection: Database connection instance
-
-    Example:
-        >>> db = get_database_connection()
-        >>> print(f"Connected to {db.database_type} database")
-    """
-    connection_string = build_connection_string()
-
-    # First call: create connection with parameters
-    # Subsequent calls: return existing singleton (parameters ignored)
-    if USE_METADATA_CACHE:
-        db = DatabaseConnection(
-            database_connection_string=connection_string,
-            cache_name=METADATA_CACHE_FILENAME
-        )
-    else:
-        db = DatabaseConnection(
-            database_connection_string=connection_string
-        )
-
-    return db
+engine = db.engine
+metadata = db.metadata
+Session = db.Session
 
 
 def get_session():
-    """
-    Get a new database session.
-
-    Use this for quick queries or when you want to manage the session manually.
-    For transactional operations, prefer using session_scope() context manager.
-
-    Returns:
-        Session: SQLAlchemy session
-
-    Example:
-        >>> session = get_session()
-        >>> try:
-        >>>     results = session.query(MyTable).all()
-        >>>     session.commit()
-        >>> except:
-        >>>     session.rollback()
-        >>>     raise
-        >>> finally:
-        >>>     session.close()
-    """
-    db = get_database_connection()
+    """Return a new session. The caller owns commit/rollback/close."""
     return db.Session()
 
 
+@contextmanager
+def session_scope():
+    """Transactional scope: commits on success, rolls back on exception.
+
+    Usage:
+        from myproject.db.connections.ThisModule import session_scope
+
+        with session_scope() as session:
+            session.add(thing)
+    """
+    with _session_scope(db) as session:
+        yield session
+
+
 # =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-#
-# NOTE: Model classes are configured automatically when imported.
-# No explicit loading function is needed. Simply import your model classes:
-#
-#   from myproject_models import User, Post
-#
-# The mapper registry and relationships are configured on import via
-# @mapper_registry.mapped decorator and configure_mappers() call in the
-# model class file.
-#
+# Connection test
 # =============================================================================
 
-def test_connection():
-    """
-    Test database connection and return basic info.
 
-    Returns:
-        dict: Connection information including database type, version, etc.
+def main() -> int:
+    """Report what this module connects to. Run this file directly to test."""
+    from sqlalchemy import inspect, text
 
-    Example:
-        >>> info = test_connection()
-        >>> print(f"Database type: {info['database_type']}")
-    """
-    db = get_database_connection()
+    print(f"database type : {db.database_type}")
+    print(f"url           : {engine.url}")  # password is masked by SQLAlchemy
+    print(f"schema        : {SCHEMA}")
 
-    from sqlalchemy import text
+    version_query = {
+        DBTYPE_POSTGRESQL: "SELECT version()",
+        DBTYPE_MYSQL: "SELECT VERSION()",
+        DBTYPE_SQLITE: "SELECT sqlite_version()",
+    }[db.database_type]
 
-    info = {
-        'database_type': db.database_type,
-        'connected': False,
-        'version': None,
-        'error': None
-    }
+    with session_scope() as session:
+        print(f"server        : {session.execute(text(version_query)).scalar()}")
 
-    try:
-        with session_scope(db) as session:
-            if db.database_type == DBTYPE_POSTGRESQL:
-                result = session.execute(text("SELECT version()"))
-                info['version'] = result.scalar()
-            elif db.database_type == DBTYPE_MYSQL:
-                result = session.execute(text("SELECT VERSION()"))
-                info['version'] = result.scalar()
-            elif db.database_type == DBTYPE_SQLITE:
-                result = session.execute(text("SELECT sqlite_version()"))
-                info['version'] = result.scalar()
+    # Ask the server what is in SCHEMA. Do NOT use db.metadata here: dm-dbcore
+    # reflects it at connect time from the *default* schema, and on PostgreSQL
+    # it clears the search_path first -- so db.metadata is legitimately empty
+    # for any project that puts its tables in a named schema. That is by
+    # design, not a misconfiguration.
+    tables = sorted(inspect(engine).get_table_names(schema=SCHEMA))
+    print(f"tables in {SCHEMA or 'default'} : {len(tables)}")
+    for name in tables:
+        print(f"  - {name}")
+    if not tables:
+        print("  (none -- does SCHEMA match the database, and can this user see it?)")
+        return 1
 
-            info['connected'] = True
-
-    except Exception as e:
-        info['error'] = str(e)
-
-    return info
+    return 0
 
 
-def clear_metadata_cache():
-    """
-    Delete the metadata cache file to force reload on next startup.
-
-    This is useful when the database schema has changed and you want to
-    ensure the cache is rebuilt.
-
-    Returns:
-        bool: True if cache was deleted or didn't exist
-    """
-    import pathlib
-
-    cache_dir = pathlib.Path.home() / '.sqlalchemy_cache'
-    cache_file = cache_dir / METADATA_CACHE_FILENAME
-    hash_file = cache_file.with_suffix('.hash')  # MySQL only
-
-    deleted = False
-
-    if cache_file.exists():
-        cache_file.unlink()
-        logger.info(f"Deleted metadata cache: {cache_file}")
-        deleted = True
-
-    if hash_file.exists():
-        hash_file.unlink()
-        logger.info(f"Deleted hash file: {hash_file}")
-        deleted = True
-
-    if not deleted:
-        logger.info("No cache file found to delete")
-
-    return True
+if __name__ == "__main__":
+    raise SystemExit(main())

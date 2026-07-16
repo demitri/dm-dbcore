@@ -1,336 +1,188 @@
-#!/usr/bin/python
-#
-# TEMPLATE: Cross-Schema Relationships
-#
-# This template demonstrates how to define relationships between tables
-# in DIFFERENT database schemas using SQLAlchemy and dm-dbcore.
-#
-# Cross-schema relationships require special handling because SQLAlchemy
-# needs to know the full schema-qualified table names.
-#
+#!/usr/bin/env python
+"""
+TEMPLATE: relationships that cross schemas (PostgreSQL) or databases (MySQL).
+
+Use this when a table in one schema has a foreign key into another --
+`content.post.author_id` -> `people.user.id`. For single-schema projects start
+from TEMPLATE_ModelClasses.py instead.
+
+THE SHORT VERSION: there is much less to do here than you would expect.
+
+The foreign key already exists in the database, and reflection reads it. You do
+not declare `ForeignKey(...)` in this file -- doing so would be writing the
+constraint down a second time, in a second language, where it can drift. What
+this file adds is the same thing every model file adds: the Python-side
+`relationship()` objects, which reflection cannot infer.
+
+Two rules make cross-schema work:
+
+  1. ONE Base, one MetaData, for every schema. Tables that reference each other
+     must live in the same MetaData or SQLAlchemy cannot resolve the foreign
+     key across them. Do not create a registry or a Base per schema.
+
+  2. Always pass `schema=` explicitly. dm-dbcore clears the PostgreSQL
+     search_path on every connection, so an unqualified name resolves to
+     nothing -- loudly, which is the point. Ambiguity here is far more
+     expensive than the typing.
+
+MySQL: substitute "database" for "schema" throughout. MySQL has no schemas, so
+a cross-database reference uses the database name in the same position:
+`schema="otherdb"`. The connection user needs privileges on both.
+
+=============================================================================
+TODO CHECKLIST
+=============================================================================
+[ ] 1. Point the import below at your connection module
+[ ] 2. Replace PEOPLE_SCHEMA / CONTENT_SCHEMA with your schema names
+[ ] 3. Replace the example classes with your tables
+[ ] 4. Define cross-schema relationships at the bottom
+[ ] 5. Run this file directly to validate: python ThisFile.py
+=============================================================================
+"""
+
+import warnings
+
+from sqlalchemy import Table, select
+from sqlalchemy.orm import DeclarativeBase, relationship, configure_mappers
+
+# TODO: point this at your connection module. Note that SCHEMA is not imported:
+# a cross-schema file names more than one schema, so it defines them below.
+from TEMPLATE_Connection import engine, session_scope
+
+warnings.filterwarnings(action="ignore", message="Skipped unsupported reflection")
+
+# TODO: name your schemas. On MySQL these are database names.
+PEOPLE_SCHEMA = "people"
+CONTENT_SCHEMA = "content"
+
+
+class Base(DeclarativeBase):
+    """Single declarative base shared by every schema in this project."""
+
+
 # =============================================================================
-# TODO CHECKLIST - Update these items before using this file:
-# =============================================================================
-# [ ] 1. Replace 'SCHEMA1' and 'SCHEMA2' with your actual schema names
-# [ ] 2. Update model class names and table names
-# [ ] 3. Define foreign key relationships with schema-qualified names
-# [ ] 4. Import both schemas' model classes
-# [ ] 5. Test relationships work correctly
-# [ ] 6. Review PostgreSQL search_path handling (see notes below)
-# =============================================================================
-
-import logging
-from sqlalchemy import Column, Integer, String, ForeignKey
-from sqlalchemy.orm import relationship, configure_mappers
-from sqlalchemy.orm import registry
-
-from dm_dbcore import DatabaseConnection, session_scope
-
-logger = logging.getLogger(__name__)
-
-# =============================================================================
-# IMPORTANT: PostgreSQL search_path
+# people schema
 # =============================================================================
 #
-# The dm-dbcore DatabaseConnection automatically clears the PostgreSQL
-# search_path to avoid ambiguity when working with multiple schemas.
-#
-# This means you MUST use fully-qualified table names in foreign keys:
-#   ✓ CORRECT:   ForeignKey('schema1.users.id')
-#   ✗ INCORRECT: ForeignKey('users.id')
-#
-# See DatabaseConnection.py:29-59 for details on search_path handling.
-#
-# =============================================================================
+# Reflect the referenced ("parent") tables first. This is not strictly
+# required -- SQLAlchemy follows a foreign key and reflects its target
+# automatically, so reflecting content.post would pull people.user in by
+# itself -- but doing it explicitly means each table is declared where you
+# expect to find it, rather than appearing as a side effect.
 
-# Create separate mapper registries for each schema (recommended)
-schema1_registry = registry()
-schema2_registry = registry()
 
-# =============================================================================
-# SCHEMA 1: User Management
-# =============================================================================
+class User(Base):
+    """A person, in the people schema."""
 
-@schema1_registry.mapped
-class User:
-    """
-    User model in schema1.
+    __table__ = Table("user", Base.metadata, schema=PEOPLE_SCHEMA, autoload_with=engine)
 
-    This user can have posts in schema2 (cross-schema relationship).
-    """
-
-    __tablename__ = 'users'
-    __table_args__ = {'schema': 'SCHEMA1', 'autoload': True}
-
-    # Primary key
-    id = Column(Integer, primary_key=True)
-
-    # ONE-TO-MANY cross-schema relationship: User -> Posts
-    posts = relationship(
-        'Post',                                    # Related class in schema2
-        back_populates='author',                   # Corresponding attribute on Post
-        foreign_keys='Post.author_id',             # Explicitly specify foreign key
-        lazy='select',
-        cascade='all, delete-orphan'
-    )
-
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<User(id={self.id})>"
 
 
-@schema1_registry.mapped
-class UserProfile:
-    """
-    User profile model in schema1.
+# =============================================================================
+# content schema
+# =============================================================================
 
-    This is a ONE-TO-ONE relationship with User (same schema).
-    """
 
-    __tablename__ = 'user_profiles'
-    __table_args__ = {'schema': 'SCHEMA1', 'autoload': True}
+class Post(Base):
+    """A post in the content schema, written by a user in the people schema."""
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('SCHEMA1.users.id'), unique=True)
+    __table__ = Table("post", Base.metadata, schema=CONTENT_SCHEMA, autoload_with=engine)
 
-    # ONE-TO-ONE relationship
-    user = relationship(
-        'User',
-        backref='profile',           # Creates User.profile attribute
-        uselist=False                # ONE-TO-ONE (not a list)
+    def __repr__(self) -> str:
+        return f"<Post(id={self.id})>"
+
+
+class Comment(Base):
+    """A comment on a post. Written by a user, so it also crosses schemas."""
+
+    __table__ = Table(
+        "comment", Base.metadata, schema=CONTENT_SCHEMA, autoload_with=engine
     )
 
-    def __repr__(self):
-        return f"<UserProfile(id={self.id}, user_id={self.user_id})>"
+    def __repr__(self) -> str:
+        return f"<Comment(id={self.id})>"
 
 
 # =============================================================================
-# SCHEMA 2: Content Management
+# Relationships
 # =============================================================================
+#
+# Nothing here mentions a schema. Once both tables are reflected into the same
+# MetaData, a relationship that crosses schemas is written exactly like one
+# that does not -- SQLAlchemy already knows where each table lives and how the
+# foreign key connects them.
 
-@schema2_registry.mapped
-class Post:
-    """
-    Post model in schema2.
+User.posts = relationship(Post, backref="author")
 
-    Posts belong to users in schema1 (cross-schema relationship).
-    """
+# AMBIGUOUS FOREIGN KEYS. `comment` has two foreign keys -- one to post, one to
+# user -- so SQLAlchemy cannot infer which one a relationship means and will
+# raise AmbiguousForeignKeysError. Name the column explicitly. This is the most
+# common failure in cross-schema models, because a table that reaches into
+# another schema usually also reaches within its own.
 
-    __tablename__ = 'posts'
-    __table_args__ = {'schema': 'SCHEMA2', 'autoload': True}
-
-    # Primary key
-    id = Column(Integer, primary_key=True)
-
-    # IMPORTANT: Foreign key MUST include schema name!
-    author_id = Column(Integer, ForeignKey('SCHEMA1.users.id'))
-
-    # MANY-TO-ONE cross-schema relationship: Post -> User
-    author = relationship(
-        'User',                                    # Related class in schema1
-        back_populates='posts',                    # Corresponding attribute on User
-        foreign_keys=[author_id],                  # Explicitly specify foreign key
-        lazy='select'
-    )
-
-    # ONE-TO-MANY same-schema relationship: Post -> Comments
-    comments = relationship(
-        'Comment',
-        back_populates='post',
-        lazy='select',
-        cascade='all, delete-orphan'
-    )
-
-    def __repr__(self):
-        return f"<Post(id={self.id}, author_id={self.author_id})>"
-
-
-@schema2_registry.mapped
-class Comment:
-    """
-    Comment model in schema2.
-
-    Comments belong to posts in the same schema, and authors in schema1.
-    """
-
-    __tablename__ = 'comments'
-    __table_args__ = {'schema': 'SCHEMA2', 'autoload': True}
-
-    id = Column(Integer, primary_key=True)
-
-    # Foreign key to Post (same schema)
-    post_id = Column(Integer, ForeignKey('SCHEMA2.posts.id'))
-
-    # Foreign key to User (cross-schema) - MUST include schema name!
-    author_id = Column(Integer, ForeignKey('SCHEMA1.users.id'))
-
-    # Relationships
-    post = relationship(
-        'Post',
-        back_populates='comments'
-    )
-
-    author = relationship(
-        'User',
-        foreign_keys=[author_id],
-        lazy='select'
-    )
-
-    def __repr__(self):
-        return f"<Comment(id={self.id}, post_id={self.post_id}, author_id={self.author_id})>"
-
-
-# =============================================================================
-# EXAMPLE: Cross-Schema Many-to-Many Relationship
-# =============================================================================
-
-from sqlalchemy import Table
-
-# Association table in schema2 linking posts to categories in schema1
-post_categories_association = Table(
-    'post_categories',
-    schema2_registry.metadata,
-    # Note: Foreign keys MUST include schema names!
-    Column('post_id', Integer, ForeignKey('SCHEMA2.posts.id'), primary_key=True),
-    Column('category_id', Integer, ForeignKey('SCHEMA1.categories.id'), primary_key=True),
-    schema='SCHEMA2'
+Post.comments = relationship(
+    Comment,
+    backref="post",
+    foreign_keys=[Comment.__table__.c.post_id],
 )
 
+User.comments = relationship(
+    Comment,
+    backref="author",
+    foreign_keys=[Comment.__table__.c.author_id],
+)
 
-@schema1_registry.mapped
-class Category:
-    """Category model in schema1."""
-
-    __tablename__ = 'categories'
-    __table_args__ = {'schema': 'SCHEMA1', 'autoload': True}
-
-    id = Column(Integer, primary_key=True)
-
-    # MANY-TO-MANY cross-schema relationship
-    posts = relationship(
-        'Post',
-        secondary=post_categories_association,
-        back_populates='categories',
-        lazy='select'
-    )
-
-    def __repr__(self):
-        return f"<Category(id={self.id})>"
-
-
-# Add corresponding relationship to Post class:
-# (This would be added to the Post class definition above)
+# MANY-TO-MANY across schemas. Reflect the join table like any other, naming
+# whichever schema it physically lives in, and pass it as `secondary=`:
 #
-# categories = relationship(
-#     'Category',
-#     secondary=post_categories_association,
-#     back_populates='posts',
-#     lazy='select'
-# )
+#     post_tags = Table("post_tag", Base.metadata, schema=CONTENT_SCHEMA,
+#                       autoload_with=engine)
+#     Post.tags = relationship(Tag, secondary=post_tags, backref="posts")
+#
+# The join table's two foreign keys may point into different schemas; that is
+# fine and needs no special handling.
+
+
+# Validate every mapping now rather than at the first query. If a cross-schema
+# foreign key cannot be resolved, this is where you find out.
+configure_mappers()
 
 
 # =============================================================================
-# COMMON PITFALLS AND SOLUTIONS
-# =============================================================================
-#
-# PITFALL 1: Forgetting schema name in ForeignKey
-# ✗ WRONG:  ForeignKey('users.id')
-# ✓ RIGHT:  ForeignKey('SCHEMA1.users.id')
-#
-# PITFALL 2: Circular imports between schema modules
-# SOLUTION: Import model classes within functions, not at module level
-#           Or use string-based relationship() references
-#
-# PITFALL 3: Ambiguous foreign_keys with multiple FKs to same table
-# SOLUTION: Explicitly specify foreign_keys parameter:
-#           relationship('User', foreign_keys=[author_id])
-#
-# PITFALL 4: search_path is set in PostgreSQL config
-# SOLUTION: dm-dbcore automatically clears search_path
-#           Always use fully-qualified names anyway
-#
-# PITFALL 5: Metadata not properly shared between registries
-# SOLUTION: Use separate registries per schema, bind both to same engine
-#
+# Validation
 # =============================================================================
 
 
-# =============================================================================
-# LOADING FUNCTIONS
-# =============================================================================
+def main() -> int:
+    """Check that cross-schema mappings resolve. Run this file directly."""
+    print(f"schemas: {PEOPLE_SCHEMA}, {CONTENT_SCHEMA}")
+    for cls in (User, Post, Comment):
+        table = cls.__table__
+        print(f"  {cls.__name__:10s} -> {table.schema}.{table.name}")
 
-def load_schema1_models(dbc):
-    """
-    Load and validate schema1 model classes.
+    # Show the reflected foreign keys, including the ones crossing schemas.
+    print("\nreflected foreign keys:")
+    for cls in (Post, Comment):
+        for fk in sorted(cls.__table__.foreign_keys, key=lambda f: f.parent.name):
+            crosses = fk.column.table.schema != cls.__table__.schema
+            marker = "  (crosses schemas)" if crosses else ""
+            print(f"  {cls.__table__.name}.{fk.parent.name} -> "
+                  f"{fk.column.table.schema}.{fk.column.table.name}.{fk.column.name}"
+                  f"{marker}")
 
-    Args:
-        dbc: DatabaseConnection instance
+    with session_scope() as session:
+        user = session.scalars(select(User)).first()
+        if user is None:
+            print("\nNo rows yet -- mappings are valid but the table is empty.")
+            return 0
+        print(f"\nfirst user : {user}")
+        print(f"  posts    : {len(user.posts)}")
+        print(f"  comments : {len(user.comments)}")
 
-    Returns:
-        bool: True if successful
-    """
-    try:
-        schema1_registry.metadata.bind = dbc.engine
-        # Don't configure_mappers() yet - wait for all schemas
-        logger.info("SCHEMA1 models loaded")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to load SCHEMA1 models: {e}")
-        return False
-
-
-def load_schema2_models(dbc):
-    """
-    Load and validate schema2 model classes.
-
-    Args:
-        dbc: DatabaseConnection instance
-
-    Returns:
-        bool: True if successful
-    """
-    try:
-        schema2_registry.metadata.bind = dbc.engine
-        # Don't configure_mappers() yet - wait for all schemas
-        logger.info("SCHEMA2 models loaded")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to load SCHEMA2 models: {e}")
-        return False
+    return 0
 
 
-def load_all_models_with_relationships(dbc):
-    """
-    Load all model classes and configure cross-schema relationships.
-
-    IMPORTANT: This must be called AFTER all individual schema loaders.
-
-    Args:
-        dbc: DatabaseConnection instance
-
-    Returns:
-        bool: True if successful
-    """
-    try:
-        # Load both schemas
-        if not load_schema1_models(dbc):
-            return False
-        if not load_schema2_models(dbc):
-            return False
-
-        # NOW configure all mappers and relationships
-        configure_mappers()
-
-        logger.info("All cross-schema relationships configured")
-        return True
-
-    except Exception as e:
-        logger.error(f"Failed to configure cross-schema relationships: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-# =============================================================================
-# MAIN (for testing)
-# =============================================================================
-
+if __name__ == "__main__":
+    raise SystemExit(main())

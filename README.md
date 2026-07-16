@@ -91,31 +91,41 @@ print(db.database_type)  # 'postgresql', 'mysql', or 'sqlite'
 
 ### Using SQLAlchemy ORM Models
 
+The database defines the schema; your model classes reflect it. Columns are
+never declared in Python — `autoload_with=` reads them from the live database,
+so the two can never drift apart:
+
 ```python
 from dm_dbcore import DatabaseConnection, session_scope
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Table, select
+from sqlalchemy.orm import DeclarativeBase
 
-Base = declarative_base()
-
-class User(Base):
-    __tablename__ = 'users'
-    id = Column(Integer, primary_key=True)
-    name = Column(String(50))
-    email = Column(String(100))
-
-# Create connection with metadata
 db = DatabaseConnection('postgresql+psycopg://user:pass@localhost/mydb')
 
-# Bind models to the connection's metadata
-Base.metadata.bind = db.engine
+class Base(DeclarativeBase):
+    pass
 
-# Query using ORM
+class User(Base):
+    """A person with an account."""
+    __table__ = Table("users", Base.metadata, schema="myschema",
+                      autoload_with=db.engine)
+
+# Query using the ORM
 with session_scope(db) as session:
-    users = session.query(User).filter(User.name.like('John%')).all()
+    users = session.scalars(
+        select(User).where(User.name.like('John%'))
+    ).all()
     for user in users:
         print(f"{user.name}: {user.email}")
 ```
+
+Always pass `schema=` explicitly (use `schema=None` for SQLite and MySQL, which
+have no schemas). dm-dbcore clears the PostgreSQL `search_path` on every
+connection, so an unqualified table name resolves to nothing rather than
+silently reflecting the wrong table.
+
+See [`STYLE_GUIDE.md`](STYLE_GUIDE.md) for the full conventions and
+[`templates/`](templates/) for copy-and-edit starting points.
 
 ### Metadata Caching
 
@@ -199,42 +209,48 @@ options = read_connection_options_from_my_cnf(section='client')
 
 #### Standard Geometric Types
 
+Nothing to register and nothing to declare. `DatabaseConnection` installs the
+`point`, `polygon`, `circle`, `citext`, and `xml` adapters into the PostgreSQL
+dialect as soon as it sees a PostgreSQL URL, so reflection picks them up on its
+own:
+
 ```python
-from sqlalchemy import Column
-from sqlalchemy.dialects.postgresql import base as pg
-from dm_dbcore.adapters import PGPoint, PGPolygon
-
-# Register types with SQLAlchemy
-pg.ischema_names['point'] = PGPoint
-pg.ischema_names['polygon'] = PGPolygon
-
-# Use in your models
 class Location(Base):
-    __tablename__ = 'locations'
-    id = Column(Integer, primary_key=True)
-    coordinates = Column(PGPoint)  # Stores (x, y) tuples
-    boundary = Column(PGPolygon)   # Stores list of (x, y) tuples
+    """A place on a map."""
+    __table__ = Table("locations", Base.metadata, schema="myschema",
+                      autoload_with=db.engine)
+
+# Reading returns adapter objects, with nothing declared above:
+#   location.coordinates -> PGPoint((1.5, 2.5))     .x  .y
+#   location.boundary    -> PGPolygon()             .points  (NumPy ndarray)
+#   location.region      -> PGCircle((3.0, 4.0), 5.0)   .x  .y  .radius
 ```
+
+These round-trip: a value read from the database can be assigned straight back
+to a geometric column, and you can build new ones in Python
+(`PGPoint((10.25, -3.5))`, `PGCircle((1, 2), 7.5)`) and insert them directly.
 
 #### Astronomy-Specific Geometric Types
 
-Requires `cornish` library: `pip install dm-dbcore[astronomy]`
+Requires the `cornish` library: `pip install dm-dbcore[astronomy]`
+
+These are the one case that *does* need manual registration. dm-dbcore
+auto-registers the plain `PGCircle` and `PGPolygon`; to get `cornish` objects
+instead you must override those entries **before** your model classes are
+imported, since reflection reads `ischema_names` at import time:
 
 ```python
-from sqlalchemy import Column
 from sqlalchemy.dialects.postgresql import base as pg
 from dm_dbcore.adapters import PGASTCircle, PGASTPolygon
 
-# Register astronomy types
+# Override the defaults dm-dbcore installed. Do this before importing models.
 pg.ischema_names['circle'] = PGASTCircle
 pg.ischema_names['polygon'] = PGASTPolygon
 
-# Use with astronomical coordinate systems
-class AstronomicalObject(Base):
-    __tablename__ = 'objects'
-    id = Column(Integer, primary_key=True)
-    search_region = Column(PGASTCircle)   # Uses cornish.ASTCircle
-    footprint = Column(PGASTPolygon)      # Uses cornish.ASTPolygon
+from myproject.db.models import AstronomicalObject  # noqa: E402
+
+# object.search_region is now a cornish.ASTCircle, and object.footprint a
+# cornish.ASTPolygon -- again reflected, not declared.
 ```
 
 ## Module Organization

@@ -1,388 +1,237 @@
-#!/usr/bin/python
-#
-# TEMPLATE: SQLAlchemy Model Classes for PostgreSQL
-#
-# PostgreSQL-specific template with schema support, custom types, and advanced features.
-#
-# =============================================================================
-# TODO CHECKLIST - Update these items before using this file:
-# =============================================================================
-# [ ] 1. Replace 'myschema' with your actual PostgreSQL schema name
-# [ ] 2. Replace 'MYPROJECT' with your project name
-# [ ] 3. Update database connection string in main() function
-# [ ] 4. Define your model classes for tables in your schema
-# [ ] 5. Add relationships between models
-# [ ] 6. Update metadata cache filename
-# [ ] 7. If using custom PostgreSQL types (Point, Polygon), uncomment examples
-# [ ] 8. Test with main() function
-# =============================================================================
+#!/usr/bin/env python
+"""
+TEMPLATE: SQLAlchemy model classes for PostgreSQL.
 
-import logging
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Table
-from sqlalchemy.orm import relationship, configure_mappers, registry
+Start from TEMPLATE_ModelClasses.py if you do not need anything PostgreSQL
+specific -- everything there applies here too. This file adds only what is
+particular to PostgreSQL: schemas, and the rich column types the other backends
+do not have.
 
-from dm_dbcore import DatabaseConnection, session_scope
+THE IDEA: the database defines the schema. This file reflects it.
 
-logger = logging.getLogger(__name__)
+Every class below reflects its columns from the live database with
+`autoload_with=engine`. You never declare columns here -- if you did, you would
+be writing the schema down twice and the copies would drift. What this file
+adds is the part the database cannot express: the Python-side relationships
+between tables.
+
+=============================================================================
+TODO CHECKLIST
+=============================================================================
+[ ] 1. Point the import below at your connection module
+[ ] 2. Replace the example classes with your tables
+[ ] 3. Give every class a one-line docstring
+[ ] 4. Define relationships at the bottom, after all classes exist
+[ ] 5. Run this file directly to validate: python ThisFile.py
+=============================================================================
+"""
+
+import warnings
+
+from sqlalchemy import Table, select, text
+from sqlalchemy.orm import DeclarativeBase, relationship, configure_mappers
+
+# TODO: point this at your connection module. SCHEMA is defined there, so a
+# project that moves schemas changes one line there rather than every Table()
+# call here.
+from TEMPLATE_Connection import SCHEMA, engine, session_scope
+
+# Reflection warns about column types it cannot map. They are harmless: the
+# column is still reflected, just without a specialised Python type.
+warnings.filterwarnings(action="ignore", message="Skipped unsupported reflection")
+
+
+class Base(DeclarativeBase):
+    """Declarative base for this project's model classes."""
+
 
 # =============================================================================
-# POSTGRESQL SCHEMA CONFIGURATION
-# =============================================================================
-# PostgreSQL uses schemas to organize tables within a database.
-# Common schemas: public, metadata, application-specific schemas
-
-SCHEMA_NAME = 'myschema'  # TODO: Replace with your schema name
-
-# =============================================================================
-# MAPPER REGISTRY
-# =============================================================================
-
-mapper_registry = registry()
-
-# =============================================================================
-# POSTGRESQL-SPECIFIC FEATURES
+# Schemas
 # =============================================================================
 #
-# PostgreSQL supports advanced features that you can use in your models:
+# PostgreSQL nests tables one level deeper than the other backends:
 #
-# 1. SCHEMAS - Organize tables into logical groups
-#    __table_args__ = {'schema': 'myschema', 'autoload': True}
+#     server -> database -> schema -> table
 #
-# 2. CUSTOM TYPES - Point, Polygon (via dm-dbcore adapters)
-#    from dm_dbcore.adapters.postgresql.pggeometry import PGPoint, PGPolygon
-#    location = Column(PGPoint)
-#
-# 3. ARRAYS - Store arrays of values
-#    from sqlalchemy.dialects.postgresql import ARRAY
-#    tags = Column(ARRAY(String))
-#
-# 4. JSON/JSONB - Store JSON data
-#    from sqlalchemy.dialects.postgresql import JSONB
-#    metadata = Column(JSONB)
-#
-# 5. UUID - Use UUIDs as primary keys
-#    from sqlalchemy.dialects.postgresql import UUID
-#    import uuid
-#    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-#
-# 6. FULL TEXT SEARCH - Search text columns efficiently
-#    from sqlalchemy.dialects.postgresql import TSVECTOR
-#    search_vector = Column(TSVECTOR)
+# Every Table() call below passes `schema=SCHEMA` explicitly, and that is not
+# decoration. dm-dbcore CLEARS THE search_path on every connection, deliberately
+# -- an implicit search_path is what lets "users" mean core.users on your laptop
+# and public.users in production, silently. With it cleared, an unqualified
+# table name resolves to nothing and reflection raises NoSuchTableError instead
+# of quietly reflecting the wrong table.
 #
 # =============================================================================
+# PostgreSQL column types
+# =============================================================================
+#
+# JSONB, ARRAY, UUID, TSVECTOR, and the geometric types all arrive through
+# reflection already typed. There is nothing to declare and nothing to import:
+# a JSONB column hands you a dict, an ARRAY column hands you a list, a POINT
+# column hands you a tuple of floats.
+#
+# The geometric and text types are not native to SQLAlchemy -- dm-dbcore
+# supplies adapters (PGPoint, PGPolygon, PGCircle, PGCIText, PGXML; see
+# dm_dbcore/adapters/postgresql/pggeometry.py) and registers them into the
+# dialect automatically whenever DatabaseConnection sees a PostgreSQL URL.
+# Importing your connection module is all the setup there is; reflection then
+# picks them up on its own.
 
 
 # =============================================================================
-# MODEL CLASSES
+# Model classes
 # =============================================================================
+#
+# Pattern:
+#
+#     class MyTable(Base):
+#         """What this table represents."""
+#         __table__ = Table("my_table", Base.metadata, schema=SCHEMA,
+#                           autoload_with=engine)
+#
+# The table must already exist in the database -- reflection reads it, it does
+# not create it.
 
-@mapper_registry.mapped
-class User:
-    """
-    User model - demonstrates basic PostgreSQL table with schema.
 
-    PostgreSQL features used:
-    - Schema specification
-    - Serial primary key (auto-increment)
-    - Timestamps
-    - One-to-many relationships
-    """
+class User(Base):
+    """A person with an account."""
 
-    __tablename__ = 'users'
-    __table_args__ = {
-        'schema': SCHEMA_NAME,
-        'autoload': True,
-        'comment': 'User accounts table'  # PostgreSQL supports table comments
-    }
+    __table__ = Table("users", Base.metadata, schema=SCHEMA, autoload_with=engine)
 
-    # Primary key (required)
-    id = Column(Integer, primary_key=True)
-
-    # Relationships
-    posts = relationship(
-        'Post',
-        back_populates='author',
-        lazy='select',
-        cascade='all, delete-orphan'
-    )
-
-    profile = relationship(
-        'UserProfile',
-        back_populates='user',
-        uselist=False,  # One-to-one
-        cascade='all, delete-orphan'
-    )
-
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<User(id={self.id})>"
 
 
-@mapper_registry.mapped
-class UserProfile:
-    """
-    User profile - demonstrates one-to-one relationship.
-    """
+class Post(Base):
+    """A post written by a user."""
 
-    __tablename__ = 'user_profiles'
-    __table_args__ = {
-        'schema': SCHEMA_NAME,
-        'autoload': True
-    }
+    __table__ = Table("posts", Base.metadata, schema=SCHEMA, autoload_with=engine)
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey(f'{SCHEMA_NAME}.users.id'), unique=True, nullable=False)
-
-    # One-to-one relationship
-    user = relationship(
-        'User',
-        back_populates='profile'
-    )
-
-    def __repr__(self):
-        return f"<UserProfile(id={self.id}, user_id={self.user_id})>"
+    def __repr__(self) -> str:
+        return f"<Post(id={self.id})>"
 
 
-@mapper_registry.mapped
-class Post:
-    """
-    Blog post model - demonstrates text content and timestamps.
-    """
+class Tag(Base):
+    """A label that can be applied to many posts."""
 
-    __tablename__ = 'posts'
-    __table_args__ = {
-        'schema': SCHEMA_NAME,
-        'autoload': True
-    }
+    __table__ = Table("tags", Base.metadata, schema=SCHEMA, autoload_with=engine)
 
-    id = Column(Integer, primary_key=True)
-    author_id = Column(Integer, ForeignKey(f'{SCHEMA_NAME}.users.id'), nullable=False)
-
-    # Relationships
-    author = relationship(
-        'User',
-        back_populates='posts'
-    )
-
-    comments = relationship(
-        'Comment',
-        back_populates='post',
-        lazy='select',
-        cascade='all, delete-orphan'
-    )
-
-    tags = relationship(
-        'Tag',
-        secondary=lambda: post_tags_association,
-        back_populates='posts',
-        lazy='select'
-    )
-
-    def __repr__(self):
-        return f"<Post(id={self.id}, author_id={self.author_id})>"
-
-
-@mapper_registry.mapped
-class Comment:
-    """
-    Comment model - demonstrates nested relationships.
-    """
-
-    __tablename__ = 'comments'
-    __table_args__ = {
-        'schema': SCHEMA_NAME,
-        'autoload': True
-    }
-
-    id = Column(Integer, primary_key=True)
-    post_id = Column(Integer, ForeignKey(f'{SCHEMA_NAME}.posts.id'), nullable=False)
-    author_id = Column(Integer, ForeignKey(f'{SCHEMA_NAME}.users.id'), nullable=False)
-
-    post = relationship(
-        'Post',
-        back_populates='comments'
-    )
-
-    author = relationship(
-        'User',
-        foreign_keys=[author_id]
-    )
-
-    def __repr__(self):
-        return f"<Comment(id={self.id}, post_id={self.post_id})>"
-
-
-# =============================================================================
-# MANY-TO-MANY EXAMPLE
-# =============================================================================
-
-# Association table for post-tag many-to-many relationship
-post_tags_association = Table(
-    'post_tags',
-    mapper_registry.metadata,
-    Column('post_id', Integer, ForeignKey(f'{SCHEMA_NAME}.posts.id'), primary_key=True),
-    Column('tag_id', Integer, ForeignKey(f'{SCHEMA_NAME}.tags.id'), primary_key=True),
-    schema=SCHEMA_NAME
-)
-
-
-@mapper_registry.mapped
-class Tag:
-    """Tag model for categorizing posts."""
-
-    __tablename__ = 'tags'
-    __table_args__ = {
-        'schema': SCHEMA_NAME,
-        'autoload': True
-    }
-
-    id = Column(Integer, primary_key=True)
-
-    posts = relationship(
-        'Post',
-        secondary=post_tags_association,
-        back_populates='tags',
-        lazy='select'
-    )
-
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Tag(id={self.id})>"
 
 
-# =============================================================================
-# POSTGRESQL CUSTOM TYPES EXAMPLE (Optional)
-# =============================================================================
-# Uncomment if you need PostGIS geometric types
+class Location(Base):
+    """A place on a map, using PostgreSQL geometric columns."""
 
-# from dm_dbcore.adapters.postgresql.pggeometry import PGPoint, PGPolygon
-#
-# @mapper_registry.mapped
-# class Location:
-#     """Location model using PostgreSQL Point type."""
-#
-#     __tablename__ = 'locations'
-#     __table_args__ = {
-#         'schema': SCHEMA_NAME,
-#         'autoload': True
-#     }
-#
-#     id = Column(Integer, primary_key=True)
-#     # coordinates = Column(PGPoint)  # PostgreSQL Point type
-#     # boundary = Column(PGPolygon)   # PostgreSQL Polygon type
-#
-#     def __repr__(self):
-#         return f"<Location(id={self.id})>"
+    # Geometric columns reflect through the dm-dbcore adapters with nothing
+    # declared here:
+    #
+    #   location.coordinates -> PGPoint((1.5, 2.5))        .x  .y
+    #   location.boundary    -> PGPolygon()                .points (ndarray)
+    #
+    # They round-trip: assign one straight back, or build a new one in Python
+    # (PGPoint((10.25, -3.5))) and insert it.
+    __table__ = Table("locations", Base.metadata, schema=SCHEMA, autoload_with=engine)
+
+    def __repr__(self) -> str:
+        return f"<Location(id={self.id})>"
+
+
+# A join table carrying no data of its own needs no class -- reflect it as a
+# plain Table and hand it to `secondary=` below.
+post_tags = Table("post_tags", Base.metadata, schema=SCHEMA, autoload_with=engine)
 
 
 # =============================================================================
-# POSTGRESQL ADVANCED TYPES EXAMPLE (Optional)
+# Relationships
 # =============================================================================
-# Uncomment if you need JSON, Arrays, or other PostgreSQL-specific types
+#
+# Defined after every class exists, so each one can refer to the others without
+# forward references.
+#
+# ONE-TO-MANY -- one user has many posts. `backref` creates the reverse
+# attribute (post.author) at the same time.
 
-# from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-# import uuid
+User.posts = relationship(Post, backref="author")
+
+# MANY-TO-MANY -- posts have many tags, tags belong to many posts. `secondary`
+# names the join table.
+
+Post.tags = relationship(Tag, secondary=post_tags, backref="posts")
+
+# CROSS-SCHEMA -- relationships whose two ends live in different schemas need
+# schema-qualified ForeignKey targets ("other_schema.other_table.id") and an
+# explicit foreign_keys=. See TEMPLATE_CrossSchemaRelationships.py.
 #
-# @mapper_registry.mapped
-# class Article:
-#     """Article model demonstrating PostgreSQL advanced types."""
+# AMBIGUOUS FOREIGN KEYS -- if a table has two FKs to the same target,
+# SQLAlchemy cannot guess which one a relationship means. Say so explicitly:
 #
-#     __tablename__ = 'articles'
-#     __table_args__ = {
-#         'schema': SCHEMA_NAME,
-#         'autoload': True
-#     }
-#
-#     # UUID primary key
-#     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-#
-#     # Array of strings
-#     # tags = Column(ARRAY(String))
-#
-#     # JSON metadata
-#     # metadata = Column(JSONB)
-#
-#     def __repr__(self):
-#         return f"<Article(id={self.id})>"
+#     Comment.author = relationship(
+#         User, foreign_keys=[Comment.__table__.c.author_id]
+#     )
 
 
-# =============================================================================
-# CROSS-SCHEMA RELATIONSHIPS (if needed)
-# =============================================================================
-#
-# If you have relationships to tables in OTHER schemas, you must:
-# 1. Use fully-qualified schema names in ForeignKey:
-#    ForeignKey('other_schema.other_table.id')
-#
-# 2. Explicitly specify foreign_keys in relationship():
-#    relationship('OtherModel', foreign_keys=[foreign_key_column])
-#
-# See TEMPLATE_CrossSchemaRelationships.py for detailed examples
-#
-# =============================================================================
-
-
-# =============================================================================
-# FINALIZE MODEL CLASSES
-# =============================================================================
-#
-# Model classes are configured automatically via the @mapper_registry.mapped
-# decorator when this module is imported. The configure_mappers() call below
-# validates all relationships are properly configured.
-#
-# No explicit load function is needed. Simply import your model classes:
-#   from myschema_models import User, Post
-# =============================================================================
-
-# Validate all mapper relationships
+# Validate every mapping and relationship now, at import, rather than at the
+# first query. Raises if a relationship is inconsistent.
 configure_mappers()
 
-logger.info(f"{SCHEMA_NAME} PostgreSQL model classes configured successfully")
+
+# =============================================================================
+# Utilities
+# =============================================================================
+
+
+def get_schema_info(session) -> dict:
+    """Return {'schema', 'exists', 'tables'} for SCHEMA, read from the server.
+
+    This asks PostgreSQL what is actually there, which is the useful counterpart
+    to reflection: it lists tables this file has NOT declared classes for.
+    """
+    exists = session.execute(
+        text(
+            "SELECT 1 FROM information_schema.schemata WHERE schema_name = :schema"
+        ),
+        {"schema": SCHEMA},
+    ).first()
+
+    tables = session.scalars(
+        text(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = :schema ORDER BY table_name"
+        ),
+        {"schema": SCHEMA},
+    ).all()
+
+    return {"schema": SCHEMA, "exists": exists is not None, "tables": list(tables)}
 
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# Validation
 # =============================================================================
 
-def get_schema_info(dbc):
-    """
-    Get information about the PostgreSQL schema.
 
-    Args:
-        dbc: DatabaseConnection instance
+def main() -> int:
+    """Check that the models match the database. Run this file directly."""
+    print(f"schema: {SCHEMA}")
+    for cls in (User, Post, Tag, Location):
+        columns = ", ".join(c.name for c in cls.__table__.columns)
+        print(f"  {cls.__name__:12s} -> {columns}")
 
-    Returns:
-        dict: Schema information
-    """
-    from sqlalchemy import text
+    with session_scope() as session:
+        info = get_schema_info(session)
+        if not info["exists"]:
+            print(f"\nSchema {SCHEMA!r} does not exist on this server.")
+            return 1
+        print(f"\ntables in {SCHEMA}: {', '.join(info['tables']) or '(none)'}")
 
-    info = {
-        'schema_name': SCHEMA_NAME,
-        'tables': [],
-        'exists': False
-    }
+        user = session.scalars(select(User)).first()
+        if user is None:
+            print("\nNo rows yet -- mappings are valid but the table is empty.")
+            return 0
+        print(f"\nfirst user : {user}")
+        print(f"  posts    : {len(user.posts)}")
 
-    try:
-        with session_scope(dbc) as session:
-            # Check if schema exists
-            result = session.execute(
-                text("SELECT schema_name FROM information_schema.schemata WHERE schema_name = :schema"),
-                {'schema': SCHEMA_NAME}
-            )
-            info['exists'] = result.first() is not None
+    return 0
 
-            if info['exists']:
-                # Get table list
-                result = session.execute(
-                    text("""
-                        SELECT table_name
-                        FROM information_schema.tables
-                        WHERE table_schema = :schema
-                        ORDER BY table_name
-                    """),
-                    {'schema': SCHEMA_NAME}
-                )
-                info['tables'] = [row[0] for row in result]
 
-    except Exception as e:
-        logger.error(f"Failed to get schema info: {e}")
-
-    return info
+if __name__ == "__main__":
+    raise SystemExit(main())
