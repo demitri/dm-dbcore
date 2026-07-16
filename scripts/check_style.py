@@ -92,22 +92,30 @@ def _assigns_name(stmt: ast.stmt, name: str) -> bool:
     return False
 
 
-def _call_name(node: ast.Call) -> str:
-    if isinstance(node.func, ast.Name):
-        return node.func.id
-    if isinstance(node.func, ast.Attribute):
-        return node.func.attr
-    return ""
+def _is_sqlalchemy_module(module: str) -> bool:
+    """True for 'sqlalchemy' and any submodule of it."""
+    return bool(module) and (module == "sqlalchemy" or module.startswith("sqlalchemy."))
 
 
 class StyleChecker(ast.NodeVisitor):
     def __init__(self, path: pathlib.Path):
         self.path = path
         self.violations: List[Violation] = []
-        # Local name -> canonical name, for imports such as
-        # `from sqlalchemy import Table as T`. Without this, `T(...)` would not
-        # match "Table" and the call would silently escape the Table checks.
-        self.aliases: dict = {}
+        # Local name -> canonical SQLAlchemy name, for `from sqlalchemy import
+        # Table as T`. Without this, T(...) would not match "Table" and the
+        # call would silently escape the Table checks.
+        #
+        # Only names imported FROM sqlalchemy are recorded. Tracking every
+        # module's aliases would flag `from widgets import Table as T` as a
+        # malformed SQLAlchemy table -- a false positive that trains people to
+        # ignore the gate.
+        self.sa_names: dict = {}
+        # Local module alias -> module, for `import sqlalchemy as sa`, so that
+        # sa.Table(...) resolves too.
+        self.sa_modules: dict = {}
+        # Set by `from sqlalchemy import *`, after which any bare name may be
+        # a SQLAlchemy export and we fall back to matching on the name alone.
+        self.sa_star = False
 
     def report(self, node: ast.AST, rule: str, message: str) -> None:
         self.violations.append(
@@ -117,34 +125,68 @@ class StyleChecker(ast.NodeVisitor):
     # -- imports -------------------------------------------------------------
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if not _is_sqlalchemy_module(node.module):
+            # Not SQLAlchemy: none of these rules apply to it.
+            self.generic_visit(node)
+            return
+
         if node.module == "sqlalchemy.ext.declarative":
             self.report(
                 node,
                 "legacy-import",
                 "STYLE_GUIDE 2: `sqlalchemy.ext.declarative` is SQLAlchemy 1.x",
             )
+
         for alias in node.names:
+            if alias.name == "*":
+                self.sa_star = True
+                continue
             if alias.name in LEGACY_ORM_NAMES:
                 self.report(node, "legacy-import", LEGACY_ORM_NAMES[alias.name])
-            # Record `import X as Y` so a renamed Table/Column is still checked.
-            if alias.asname:
-                self.aliases[alias.asname] = alias.name
+            self.sa_names[alias.asname or alias.name] = alias.name
+
         self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if alias.asname:
-                self.aliases[alias.asname] = alias.name
+            if _is_sqlalchemy_module(alias.name):
+                self.sa_modules[alias.asname or alias.name] = alias.name
         self.generic_visit(node)
 
-    def _resolve(self, name: str) -> str:
-        """Map a local name back to what it was imported as."""
-        return self.aliases.get(name, name)
+    def _resolve_call(self, node: ast.Call):
+        """Return the canonical SQLAlchemy name this call targets, else None.
+
+        Resolves `T(...)` from `from sqlalchemy import Table as T`, and
+        `sa.Table(...)` from `import sqlalchemy as sa`. Returns None for calls
+        that are not SQLAlchemy, so unrelated code is never flagged.
+        """
+        func = node.func
+
+        if isinstance(func, ast.Name):
+            if func.id in self.sa_names:
+                return self.sa_names[func.id]
+            if self.sa_star:
+                # `from sqlalchemy import *` -- match on the bare name.
+                return func.id
+            return None
+
+        if isinstance(func, ast.Attribute):
+            # sa.Table(...) / sqlalchemy.orm.registry()
+            root = func.value
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in self.sa_modules:
+                return func.attr
+            return None
+
+        # Any other callee shape (subscript, call, lambda) -- see the blind
+        # spots in this module's docstring.
+        return None
 
     # -- calls ---------------------------------------------------------------
 
     def visit_Call(self, node: ast.Call) -> None:
-        name = self._resolve(_call_name(node))
+        name = self._resolve_call(node)
 
         if name in LEGACY_ORM_NAMES:
             self.report(node, "legacy-orm", LEGACY_ORM_NAMES[name])
@@ -237,7 +279,7 @@ class StyleChecker(ast.NodeVisitor):
         value = getattr(stmt, "value", None)
         if not isinstance(value, ast.Call):
             return
-        name = self._resolve(_call_name(value))
+        name = self._resolve_call(value)
         if name in ("Column", "mapped_column"):
             self.report(
                 stmt,

@@ -280,10 +280,19 @@ class PGPolygon(types.UserDefinedType):
 		'''
 		Return a function that converts the value that
 		comes from the database to a Python object.
+
+		Requires NumPy: the points are held in an ndarray. NumPy is NOT pulled
+		in by the [postgresql] extra, so reading a POLYGON column without it
+		must say so rather than fail on `np` being None.
 		'''
+		if not _NUMPY_AVAILABLE:
+			raise RuntimeError(
+				"Reading a POLYGON column requires NumPy, which is not installed. "
+				"Install it with: pip install dm-dbcore[numpy]"
+			)
+
 		def process(value):
 			''' Return a Python object. '''
-			#print("-------------------------------- polygon being created ----")
 			if value is None:
 				return None
 			# Value from db will be a string of the form (without quotes): '((1,2),(3,4),(4,5))'.

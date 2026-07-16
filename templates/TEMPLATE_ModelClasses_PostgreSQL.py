@@ -66,15 +66,18 @@ class Base(DeclarativeBase):
 #
 # JSONB, ARRAY, UUID, TSVECTOR, and the geometric types all arrive through
 # reflection already typed. There is nothing to declare and nothing to import:
-# a JSONB column hands you a dict, an ARRAY column hands you a list, a POINT
-# column hands you a tuple of floats.
+# a JSONB column hands you a dict and an ARRAY column hands you a list.
 #
 # The geometric and text types are not native to SQLAlchemy -- dm-dbcore
 # supplies adapters (PGPoint, PGPolygon, PGCircle, PGCIText, PGXML; see
 # dm_dbcore/adapters/postgresql/pggeometry.py) and registers them into the
 # dialect automatically whenever DatabaseConnection sees a PostgreSQL URL.
 # Importing your connection module is all the setup there is; reflection then
-# picks them up on its own.
+# picks them up on its own. Each hands you its adapter object, not a raw tuple:
+#
+#   POINT   -> PGPoint      .x  .y
+#   CIRCLE  -> PGCircle     .x  .y  .radius
+#   POLYGON -> PGPolygon    .points  (a NumPy ndarray; needs dm-dbcore[numpy])
 
 
 # =============================================================================

@@ -97,7 +97,17 @@ Model classes for any backend dm-dbcore supports. Reflected classes, a join tabl
 
 Everything in the generic template, plus what is particular to PostgreSQL: schemas (`server -> database -> schema -> table`), and the column types the other backends lack.
 
-JSONB, ARRAY, UUID, TSVECTOR and the geometric types arrive through reflection **already typed** — nothing to declare, nothing to import. A JSONB column hands you a dict, an ARRAY column a list, a POINT column a tuple of floats. dm-dbcore registers its adapters (`PGPoint`, `PGPolygon`, `PGCircle`, `PGCIText`, `PGXML`) into the dialect automatically when `DatabaseConnection` sees a PostgreSQL URL. Importing your connection module is the whole setup.
+JSONB, ARRAY, UUID, TSVECTOR and the geometric types arrive through reflection **already typed** — nothing to declare, nothing to import. A JSONB column hands you a dict and an ARRAY column a list. dm-dbcore registers its adapters (`PGPoint`, `PGPolygon`, `PGCircle`, `PGCIText`, `PGXML`) into the dialect automatically when `DatabaseConnection` sees a PostgreSQL URL. Importing your connection module is the whole setup.
+
+The geometric types hand you their adapter object, not a raw tuple:
+
+| Column | Returns | Access |
+|---|---|---|
+| `POINT` | `PGPoint` | `.x` `.y` |
+| `CIRCLE` | `PGCircle` | `.x` `.y` `.radius` |
+| `POLYGON` | `PGPolygon` | `.points` — a NumPy ndarray, so needs `dm-dbcore[numpy]` |
+
+All three round-trip: assign one straight back, or build a new one (`PGPoint((10.25, -3.5))`) and insert it.
 
 Also includes `get_schema_info(session)`, which asks the server what is actually in `SCHEMA` — the useful counterpart to reflection, since it lists tables you have *not* written classes for.
 
