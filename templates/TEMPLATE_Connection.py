@@ -16,7 +16,7 @@ TODO CHECKLIST
 [ ] 1. Rename the file for the target it connects to (e.g. SalmonDBConnection.py)
 [ ] 2. Set DB_HOST / DB_PORT / DB_DATABASE / DB_USER below
 [ ] 3. Set SCHEMA to the schema holding your tables (None for SQLite/MySQL)
-[ ] 4. Set CACHE_NAME to something unique to this project
+[ ] 4. Leave CACHE_NAME as None -- metadata caching is experimental, see below
 [ ] 5. Delete the database blocks you do not use
 [ ] 6. Run this file directly to test the connection: python ThisFile.py
 =============================================================================
@@ -83,9 +83,12 @@ SCHEMA = "myschema"
 #     swallowed -- so if $HOME is read-only (containers, CI, shared hosts), asking
 #     for a cache you cannot write is an error, by design.
 #
-# The machinery itself is correct: staleness is detected from a schema hash and
-# the cache is rebuilt when the schema changes. Turn it on only once it covers
-# metadata you actually use, and only where $HOME is writable.
+#  3. Staleness detection is low-fidelity. The cache is rebuilt when the schema
+#     hash changes, but that hash covers only table/column names, broad types
+#     and nullability -- it will NOT notice VARCHAR(100) -> VARCHAR(200), a
+#     changed default, or an added constraint, and would serve stale metadata.
+#
+# Treat metadata caching as experimental. See TODO.md.
 CACHE_NAME = None
 
 # =============================================================================

@@ -26,6 +26,14 @@ is not.
 Note: pymysql is NOT installed on the development machine; mysqldb IS. That is
 the opposite of what the packaging declares, and is why this went unnoticed.
 
+- [ ] The diagnostic scripts tell MySQL users to put their password in
+      `~/.my.cnf`, but in URL mode they hand the URL straight to
+      `DatabaseConnection`, and pymysql does not read `~/.my.cnf` (unlike libpq
+      and `~/.pgpass`). Either call `read_password_from_my_cnf()` in URL mode or
+      say that MySQL users must use `--module` mode. See
+      `scripts/db_connection_test.py` and `scripts/test_dm_dbcore.py`.
+      (codex round 3)
+
 ## Unify db.metadata, Base.metadata, and SCHEMA (metadata caching)
 
 Raised by codex review of 07ebc8c..04539a3. The caching *machinery* is now fixed

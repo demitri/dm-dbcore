@@ -127,26 +127,37 @@ silently reflecting the wrong table.
 See [`STYLE_GUIDE.md`](STYLE_GUIDE.md) for the full conventions and
 [`templates/`](templates/) for copy-and-edit starting points.
 
-### Metadata Caching
+### Metadata Caching (experimental)
 
-Metadata caching dramatically improves application startup time by storing SQLAlchemy's table reflection data:
+Passing `cache_name` pickles SQLAlchemy's table reflection data to
+`~/.sqlalchemy_cache/`, so startup can skip re-reflecting the database:
 
 ```python
-# Enable caching by providing a cache filename
 db = DatabaseConnection(
     database_connection_string='postgresql+psycopg://localhost/mydb',
     cache_name='myapp_metadata.pkl'
 )
-
-# Cache is automatically stored in ~/.sqlalchemy_cache/
-# Cache is invalidated automatically when schema changes are detected
 ```
 
-**PostgreSQL**: Uses `information_schema.columns` to compute schema hash (no manual setup required)
+**Off by default, and worth understanding before you turn it on.** Three
+caveats, all tracked in [`TODO.md`](TODO.md):
 
-**MySQL**: Uses `information_schema.TABLES` to compute schema hash (no manual setup required)
+- **It may cache nothing useful.** The cache stores `db.metadata`, reflected
+  from the database's *default* schema. dm-dbcore clears the PostgreSQL
+  `search_path`, so for a project whose tables live in a named schema, that is
+  empty. Model classes reflect through their own `Base.metadata`, which this
+  cache does not cover.
+- **Staleness detection is coarse.** The schema hash covers table and column
+  names, broad types, and nullability. It will not notice `VARCHAR(100) →
+  VARCHAR(200)`, a changed default, or an added constraint — so it can serve
+  stale metadata. On MySQL the hash uses `TABLES.UPDATE_TIME`, which tracks data
+  changes rather than schema changes.
+- **Writes are strict.** If the cache cannot be written (read-only `$HOME`,
+  containers, CI) the error propagates rather than being swallowed: you asked
+  for a cache, so silently not making one would be a lie. Do not enable it where
+  `$HOME` is not writable.
 
-**SQLite**: Cache is always considered stale (no automatic detection)
+**SQLite**: no staleness detection at all — the cache is always treated as stale.
 
 ## Advanced Features
 

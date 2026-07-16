@@ -26,6 +26,11 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
     `factories['Table'](...)` or a Table returned from a helper function.
     `import X as Y` aliases ARE resolved, but deciding the rest would need full
     symbol resolution, which this gate does not do.
+  - Scope. Bindings are tracked in one flat pass: a name reassigned or shadowed
+    by a function parameter is unbound from that point on, and does not come
+    back afterwards. This under-reports rather than over-reports, which is the
+    safe direction, but a module that rebinds `Table` inside a function and
+    then uses the real one at module level below would go unchecked there.
   - Code inside strings, docstrings, or comments (deliberate: examples in prose
     are not executed).
   - Whether a docstring is accurate, only that model classes have one.
@@ -163,11 +168,44 @@ class StyleChecker(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         # Track `mapper_registry = registry()` so that only a real SQLAlchemy
         # registry makes `@mapper_registry.mapped` a violation.
-        if isinstance(node.value, ast.Call) and self._resolve_call(node.value) == "registry":
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    self.sa_registries.add(target.id)
+        is_registry = (
+            isinstance(node.value, ast.Call)
+            and self._resolve_call(node.value) == "registry"
+        )
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if is_registry:
+                self.sa_registries.add(target.id)
+            else:
+                # Rebinding shadows the import: after `T = widget_factory`,
+                # `T(...)` is no longer sqlalchemy.Table. Without this the maps
+                # only ever grew and kept flagging the new, unrelated T.
+                self._unbind(target.id)
         self.generic_visit(node)
+
+    def _unbind(self, name: str) -> None:
+        """Forget a SQLAlchemy binding whose local name has been reassigned."""
+        self.sa_names.pop(name, None)
+        self.sa_modules.pop(name, None)
+        self.sa_registries.discard(name)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        # A parameter shadows a module-level import for the body of the
+        # function. Unbinding is one-way (this gate does not model scopes), so
+        # a shadowed name stays unbound afterwards -- it under-reports rather
+        # than crying wolf, which is the safer direction for a name a reader
+        # would not expect to be SQLAlchemy's anyway.
+        args = node.args
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            self._unbind(arg.arg)
+        if args.vararg:
+            self._unbind(args.vararg.arg)
+        if args.kwarg:
+            self._unbind(args.kwarg.arg)
+        self.generic_visit(node)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def _is_sa_mapped_decorator(self, dec: ast.expr) -> bool:
         """True only for `@<sqlalchemy registry>.mapped`."""
