@@ -11,8 +11,6 @@ from contextlib import contextmanager
 import sqlalchemy
 from sqlalchemy import create_engine, MetaData, text
 from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.orm import registry
 from sqlalchemy.event import listens_for
 from sqlalchemy.pool import Pool
 #from sqlalchemy.ext.automap import automap_base
@@ -321,14 +319,22 @@ class DatabaseConnection(object):
 		'''
 		if self.database_connection_string.startswith('postgresql+psycopg://'):
 			return DBTYPE_POSTGRESQL
-		elif self.database_connection_string.startswith('mysql://'):
+		elif self.database_connection_string.startswith(('mysql://', 'mysql+pymysql://')):
+			# 'mysql+pymysql://' selects pymysql, which is what dm-dbcore installs
+			# (see the [mysql] extra in pyproject.toml). A bare 'mysql://' is
+			# accepted for backwards compatibility, but SQLAlchemy resolves it to
+			# the mysqldb (mysqlclient) driver, which dm-dbcore does NOT install --
+			# prefer 'mysql+pymysql://'.
 			return DBTYPE_MYSQL
 		elif self.database_connection_string.startswith('sqlite://'):
 			return DBTYPE_SQLITE
 		else:
 			raise ValueError(
 				f"Unable to determine database type from connection string: '{self.database_connection_string}'. "
-				f"Connection string must start with one of: 'postgresql+psycopg://', 'mysql://', or 'sqlite://'"
+				f"Connection string must start with one of: 'postgresql+psycopg://', "
+				f"'mysql+pymysql://', 'mysql://', or 'sqlite://'. "
+				f"Note that PostgreSQL requires the psycopg v3 driver: a bare 'postgresql://' "
+				f"is rejected because SQLAlchemy silently resolves it to the deprecated psycopg2."
 			)
 
 	@staticmethod

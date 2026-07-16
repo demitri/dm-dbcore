@@ -40,14 +40,23 @@ except ImportError:
 	np = None
 
 try:
-	from psycopg.adapt import Dumper, register_dumper
-	from psycopg import pq
-	_PSYCOPG_AVAILABLE = True
+	import psycopg
 except ImportError:
+	# psycopg is an optional dependency (pip install dm-dbcore[postgresql]).
+	# Its absence is legitimate; the dumpers below are simply not registered.
 	_PSYCOPG_AVAILABLE = False
-	register_dumper = None
+	psycopg = None
 	Dumper = None
 	pq = None
+else:
+	# Deliberately NOT wrapped in try/except. If psycopg is installed but these
+	# names are wrong, that is a bug in THIS file, not a missing dependency, and
+	# it must fail loudly. Catching it here previously set _PSYCOPG_AVAILABLE to
+	# False and silently disabled every dumper in this module -- the adapters
+	# looked present but never registered, and nothing reported it.
+	from psycopg.adapt import Dumper
+	from psycopg import pq
+	_PSYCOPG_AVAILABLE = True
 
 class PGPoint(types.UserDefinedType):
 	'''
@@ -55,54 +64,38 @@ class PGPoint(types.UserDefinedType):
 
 	https://www.postgresql.org/docs/current/datatype-geometric.html#id-1.5.7.16.5
 
-	Using this datatype definition, tuples of float values can be provided
-	to point columns, and tuples of float values will be returned.
+	Reading a POINT column returns a PGPoint object; its coordinates are
+	available as the `.x` and `.y` attributes. Assigning a PGPoint to a POINT
+	column writes it back, via the psycopg dumper registered at the bottom of
+	this file, so a value read from the database can be written straight back
+	without conversion.
 	'''
+	# The instances SQLAlchemy uses as *column types* are always constructed
+	# with no arguments, so the type carries no state that could vary a cache
+	# key. Without this, SQLAlchemy emits a performance warning per query.
+	cache_ok = True
+
 	def __init__(self, point:Iterable=None):
 
 		if point is None:
+			# SQLAlchemy constructs the column type with no arguments.
+			self.x = None
+			self.y = None
 			return
 
 		try:
-			self.x = point[0]
-			self.y = point[1]
-		except IndexError:
-			raise ValueError(f"The point value (x, y) should be provided as two element interable, e.g. list, tuple, array, etc.")
+			x, y = point[0], point[1]
+		except (IndexError, KeyError, TypeError):
+			raise ValueError(f"The point value (x, y) should be provided as a two element iterable, e.g. list, tuple, array, etc.; received '{point!r}'.")
 
 		try:
-			float(self.x)
-			float(self.y)
-		except ValueError:
-			raise ValueError(f"Both elements provided must be numeric, received '{type(self.x)}' and '{type(self.x)}'.")
+			self.x = float(x)
+			self.y = float(y)
+		except (TypeError, ValueError):
+			raise ValueError(f"Both elements provided must be numeric, received '{type(x).__name__}' and '{type(y).__name__}'.")
 
 	def get_col_spec(self, **kw):
 		return "POINT"
-
-
-class PGCircle(types.UserDefinedType):
-	'''
-	Class to represent the PostgreSQL "CIRCLE" datatype (flat geometry).
-
-	https://www.postgresql.org/docs/current/datatype-geometric.html#DATATYPE-CIRCLE
-	'''
-	def get_col_spec(self, **kw):
-		return "CIRCLE"
-
-	def bind_processor(self, dialect):
-		'''
-		Return a function that performs the conversion from the
-		provided object to a form that PostgreSQL can understand.
-
-		To insert a value into a 'point' field:
-			INSERT INTO some_table (pt) VALUES ('1,2');
-		'''
-		def process(value):
-			if value is None:
-				return value
-			else:
-				items = value.split(",")
-				return "{0[0]},{0[1]}".format(value.split(","))
-		return process
 
 	def result_processor(self, dialect, coltype):
 		'''
@@ -112,11 +105,8 @@ class PGCircle(types.UserDefinedType):
 		def process(value):
 			if value is None:
 				return None
-			else:
-				# value from db will be a string of the form (without the quotes): '1,2'
-				#point_values = value.split(",") # not sure if there will be surrounding quotes
-				#return (float(point_values[0]), float(point_values[1]))
-				return np.array(ast.literal_eval(value))
+			# The value from the database is a string of the form '(1.5,2.5)'.
+			return PGPoint(ast.literal_eval(value))
 		return process
 
 	@property
@@ -126,24 +116,132 @@ class PGCircle(types.UserDefinedType):
 		'''
 		return f"POINT({self.x},{self.y})"
 
+	def __repr__(self):
+		return f"PGPoint(({self.x}, {self.y}))"
+
+	def __eq__(self, other):
+		if not isinstance(other, PGPoint):
+			return NotImplemented
+		return (self.x, self.y) == (other.x, other.y)
+
+	def __hash__(self):
+		return hash((self.x, self.y))
+
+
+class PGCircle(types.UserDefinedType):
+	'''
+	Class to represent the PostgreSQL "CIRCLE" datatype (flat geometry).
+
+	https://www.postgresql.org/docs/current/datatype-geometric.html#DATATYPE-CIRCLE
+
+	A circle is a centre point and a radius. Reading a CIRCLE column returns a
+	PGCircle object exposing `.x`, `.y`, and `.radius`; assigning a PGCircle to
+	a CIRCLE column writes it back via the registered psycopg dumper.
+	'''
+	cache_ok = True
+
+	def __init__(self, center:Iterable=None, radius=None):
+
+		if center is None and radius is None:
+			# SQLAlchemy constructs the column type with no arguments.
+			self.x = None
+			self.y = None
+			self.radius = None
+			return
+
+		if center is None or radius is None:
+			raise ValueError("A circle requires both a centre (x, y) and a radius.")
+
+		try:
+			x, y = center[0], center[1]
+		except (IndexError, KeyError, TypeError):
+			raise ValueError(f"The centre should be provided as a two element iterable, e.g. list, tuple, array, etc.; received '{center!r}'.")
+
+		try:
+			self.x = float(x)
+			self.y = float(y)
+			self.radius = float(radius)
+		except (TypeError, ValueError):
+			raise ValueError(f"The centre coordinates and radius must all be numeric; received '{center!r}' and '{radius!r}'.")
+
+	def get_col_spec(self, **kw):
+		return "CIRCLE"
+
+	def result_processor(self, dialect, coltype):
+		'''
+		Return a function that converts the value that comes from the
+		database to a Python object.
+		'''
+		def process(value):
+			if value is None:
+				return None
+			# PostgreSQL renders a circle as '<(3,4),5>'. That is not valid
+			# Python, so strip the angle brackets first, leaving '(3,4),5'
+			# which evaluates to ((3, 4), 5).
+			center, radius = ast.literal_eval(value.strip("<>"))
+			return PGCircle(center, radius)
+		return process
+
+	@property
+	def sql_string(self):
+		'''
+		The PostgreSQL string representation of this circle value.
+		'''
+		return f"<({self.x},{self.y}),{self.radius}>"
+
+	def __repr__(self):
+		return f"PGCircle(({self.x}, {self.y}), {self.radius})"
+
+	def __eq__(self, other):
+		if not isinstance(other, PGCircle):
+			return NotImplemented
+		return (self.x, self.y, self.radius) == (other.x, other.y, other.radius)
+
+	def __hash__(self):
+		return hash((self.x, self.y, self.radius))
+
 class PGPolygon(types.UserDefinedType):
 	'''
 	Class to represent PostgreSQL "POLYGON" datatype.
 
 	Ref: https://www.postgresql.org/docs/current/datatype-geometric.html#DATATYPE-POLYGON
 
-	Using this datatype definition, tuples of float values can be provided
-	to point columns, and tuples of float values will be returned.
+	Reading a POLYGON column returns a PGPolygon object whose `.points` are a
+	NumPy `ndarray` of shape (n,2). Assigning a PGPolygon to a POLYGON column
+	writes it back, via the psycopg dumper registered at the bottom of this
+	file.
 
-	:param polygon: points of a polygon in a NumPy `ndarray`, shape (n,2)
+	Unlike PGPoint and PGCircle, this type requires NumPy
+	(pip install dm-dbcore[numpy]).
+
+	:param points: points of a polygon in a NumPy `ndarray`, shape (n,2)
 	'''
+	# See the note on PGPoint.cache_ok. Matches PGCIText and PGXML, which
+	# already set this.
+	cache_ok = True
+
 	def __init__(self, points=None):
+		if points is None:
+			# SQLAlchemy constructs the column type with no arguments. This must
+			# work without NumPy, so it is checked before the NumPy guard below:
+			# merely reflecting a POLYGON column should not require NumPy.
+			self.points = None
+			return
+
+		# Checked here, before any use of `np`. NumPy is an optional dependency,
+		# so `np` may be None -- in which case `isinstance(points, np.ndarray)`
+		# would raise a confusing "isinstance() arg 2 must be a type" TypeError
+		# instead of naming the real problem.
+		if not _NUMPY_AVAILABLE:
+			raise RuntimeError(
+				"PGPolygon requires NumPy to hold its points, but NumPy is not "
+				"installed. Install it with: pip install dm-dbcore[numpy]"
+			)
+
 		if isinstance(points, np.ndarray):
 			self.points = points
 		elif isinstance(points, str):
 			self.points = np.array(points)
-		elif points is None:
-			return
 		else:
 			raise ValueError(f"The type {type(points)} is not handled to initialize a PGPolygon.")
 
@@ -157,16 +255,25 @@ class PGPolygon(types.UserDefinedType):
 
 		To insert a value into a 'polygon' field:
 			INSERT INTO some_table (pg) VALUES ('((1,2),(3,4),(4,5))');
+
+		The value produced is DATA, not SQL: it carries no quotes and no
+		'::POLYGON' cast. A bound parameter is sent to the server as a value,
+		so any SQL punctuation in it would be taken literally.
 		'''
 		def process(value):
 			''' Return a string. '''
 			if value is None:
 				return None
-			if isinstance(value, np.ndarray):
-				return "'{}'::POLYGON".format(str(value.tolist()).replace("[","(").replace("]",")"))
-			else:
-				# assuming some combination of tuples/lists
-				return "'{}'::POLYGON".format(str(value).replace("[","(").replace("]",")"))
+
+			# `value` may be a PGPolygon -- this class doubles as both the
+			# SQLAlchemy type and the Python value -- or a raw ndarray or
+			# sequence of (x, y) pairs. It must NOT be str()'d: PGPolygon is a
+			# SQLAlchemy type, so str() returns the compiled type name
+			# ('POLYGON'), not the points.
+			points = value.points if isinstance(value, PGPolygon) else value
+			if points is None:
+				return None
+			return _polygon_literal(points)
 		return process
 
 	def result_processor(self, dialect, coltype):
@@ -227,5 +334,14 @@ if _PSYCOPG_AVAILABLE:
 		def dump(self, obj):
 			return _polygon_literal(obj.points).encode()
 
-	register_dumper(PGPoint, _PGPointDumper)
-	register_dumper(PGPolygon, _PGPolygonDumper)
+	class _PGCircleDumper(Dumper):
+		format = pq.Format.TEXT
+
+		def dump(self, obj):
+			return f"<({obj.x},{obj.y}),{obj.radius}>".encode()
+
+	# Global registration. Note this is psycopg.adapters.register_dumper --
+	# there is no psycopg.adapt.register_dumper in psycopg v3.
+	psycopg.adapters.register_dumper(PGPoint, _PGPointDumper)
+	psycopg.adapters.register_dumper(PGPolygon, _PGPolygonDumper)
+	psycopg.adapters.register_dumper(PGCircle, _PGCircleDumper)

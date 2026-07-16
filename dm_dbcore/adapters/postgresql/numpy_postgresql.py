@@ -18,14 +18,21 @@ except ImportError:
 	np = None
 
 try:
-	from psycopg.adapt import Dumper, register_dumper
-	from psycopg import pq
-	_PSYCOPG_AVAILABLE = True
+	import psycopg
 except ImportError:
+	# psycopg is an optional dependency (pip install dm-dbcore[postgresql]).
+	# Its absence is legitimate; the dumpers below are simply not registered.
 	_PSYCOPG_AVAILABLE = False
-	register_dumper = None
+	psycopg = None
 	Dumper = None
 	pq = None
+else:
+	# Deliberately NOT wrapped in try/except -- see the same note in
+	# pggeometry.py. A wrong name here is a bug, not a missing dependency, and
+	# swallowing it silently disabled every NumPy dumper in this module.
+	from psycopg.adapt import Dumper
+	from psycopg import pq
+	_PSYCOPG_AVAILABLE = True
 
 
 def _format_pg_array(value: Any) -> str:
@@ -91,14 +98,16 @@ if _PSYCOPG_AVAILABLE and _NUMPY_AVAILABLE:
 		"float64",
 	]
 
+	# Global registration. Note this is psycopg.adapters.register_dumper --
+	# there is no psycopg.adapt.register_dumper in psycopg v3.
 	for type_name in _numpy_types:
 		numpy_type = getattr(np, type_name, None)
 		if numpy_type is not None:
-			register_dumper(numpy_type, _NumpyScalarDumper)
+			psycopg.adapters.register_dumper(numpy_type, _NumpyScalarDumper)
 
-	register_dumper(np.integer, _NumpyScalarDumper)
-	register_dumper(np.floating, _NumpyScalarDumper)
-	register_dumper(np.ndarray, _NumpyArrayDumper)
+	psycopg.adapters.register_dumper(np.integer, _NumpyScalarDumper)
+	psycopg.adapters.register_dumper(np.floating, _NumpyScalarDumper)
+	psycopg.adapters.register_dumper(np.ndarray, _NumpyArrayDumper)
 
 
 
