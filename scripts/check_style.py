@@ -73,15 +73,9 @@ class Violation(NamedTuple):
         return f"{self.path}:{self.line}: [{self.rule}] {self.message}"
 
 
-def _is_model_class(node: ast.ClassDef) -> bool:
-    """A model class inherits from Base, or is decorated @<registry>.mapped."""
-    for base in node.bases:
-        if isinstance(base, ast.Name) and base.id == "Base":
-            return True
-    for dec in node.decorator_list:
-        if isinstance(dec, ast.Attribute) and dec.attr == "mapped":
-            return True
-    return False
+def _is_sqlalchemy_module(module: str) -> bool:
+    """True for 'sqlalchemy' and any submodule of it."""
+    return bool(module) and (module == "sqlalchemy" or module.startswith("sqlalchemy."))
 
 
 def _assigns_name(stmt: ast.stmt, name: str) -> bool:
@@ -90,11 +84,6 @@ def _assigns_name(stmt: ast.stmt, name: str) -> bool:
     if isinstance(stmt, ast.AnnAssign):
         return isinstance(stmt.target, ast.Name) and stmt.target.id == name
     return False
-
-
-def _is_sqlalchemy_module(module: str) -> bool:
-    """True for 'sqlalchemy' and any submodule of it."""
-    return bool(module) and (module == "sqlalchemy" or module.startswith("sqlalchemy."))
 
 
 class StyleChecker(ast.NodeVisitor):
@@ -116,6 +105,10 @@ class StyleChecker(ast.NodeVisitor):
         # Set by `from sqlalchemy import *`, after which any bare name may be
         # a SQLAlchemy export and we fall back to matching on the name alone.
         self.sa_star = False
+        # Names bound to a SQLAlchemy registry(), e.g. `mapper_registry =
+        # registry()`. Only these make `@x.mapped` a SQLAlchemy decorator --
+        # otherwise an unrelated `@app.mapped` would be flagged.
+        self.sa_registries: set = set()
 
     def report(self, node: ast.AST, rule: str, message: str) -> None:
         self.violations.append(
@@ -143,15 +136,54 @@ class StyleChecker(ast.NodeVisitor):
                 continue
             if alias.name in LEGACY_ORM_NAMES:
                 self.report(node, "legacy-import", LEGACY_ORM_NAMES[alias.name])
-            self.sa_names[alias.asname or alias.name] = alias.name
+            local = alias.asname or alias.name
+            self.sa_names[local] = alias.name
+            # The imported name may itself be a submodule, as in
+            # `from sqlalchemy import orm` -> orm.declarative_base(). Record it
+            # as a module too so attribute calls through it resolve.
+            self.sa_modules[local] = f"{node.module}.{alias.name}"
 
         self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if _is_sqlalchemy_module(alias.name):
-                self.sa_modules[alias.asname or alias.name] = alias.name
+            if not _is_sqlalchemy_module(alias.name):
+                continue
+            if alias.asname:
+                # `import sqlalchemy.orm as so` binds "so".
+                self.sa_modules[alias.asname] = alias.name
+            else:
+                # `import sqlalchemy.orm` binds the ROOT name "sqlalchemy", not
+                # "sqlalchemy.orm". Keying by the full dotted path meant
+                # sqlalchemy.orm.declarative_base() resolved to nothing.
+                root = alias.name.split(".")[0]
+                self.sa_modules[root] = root
         self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        # Track `mapper_registry = registry()` so that only a real SQLAlchemy
+        # registry makes `@mapper_registry.mapped` a violation.
+        if isinstance(node.value, ast.Call) and self._resolve_call(node.value) == "registry":
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.sa_registries.add(target.id)
+        self.generic_visit(node)
+
+    def _is_sa_mapped_decorator(self, dec: ast.expr) -> bool:
+        """True only for `@<sqlalchemy registry>.mapped`."""
+        return (
+            isinstance(dec, ast.Attribute)
+            and dec.attr == "mapped"
+            and isinstance(dec.value, ast.Name)
+            and dec.value.id in self.sa_registries
+        )
+
+    def _is_model_class(self, node: ast.ClassDef) -> bool:
+        """A model class inherits from Base, or is decorated @<registry>.mapped."""
+        for base in node.bases:
+            if isinstance(base, ast.Name) and base.id == "Base":
+                return True
+        return any(self._is_sa_mapped_decorator(d) for d in node.decorator_list)
 
     def _resolve_call(self, node: ast.Call):
         """Return the canonical SQLAlchemy name this call targets, else None.
@@ -231,7 +263,7 @@ class StyleChecker(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         for dec in node.decorator_list:
-            if isinstance(dec, ast.Attribute) and dec.attr == "mapped":
+            if self._is_sa_mapped_decorator(dec):
                 self.report(
                     node,
                     "mapper-registry",
@@ -239,7 +271,7 @@ class StyleChecker(ast.NodeVisitor):
                     "inherit from Base instead",
                 )
 
-        if not _is_model_class(node):
+        if not self._is_model_class(node):
             self.generic_visit(node)
             return
 

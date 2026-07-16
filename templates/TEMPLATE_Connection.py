@@ -67,20 +67,26 @@ SQLITE_PATH = os.environ.get("MYPROJECT_SQLITE_PATH", "myproject.sqlite")
 #   SQLite:     None. SQLite has no schemas.
 SCHEMA = "myschema"
 
-# Metadata cache filename, or None to disable.
+# Metadata cache filename, or None to disable. Default: disabled.
 #
-# SCOPE, so this is not mistaken for something it is not: the cache stores
-# `db.metadata`, which DatabaseConnection reflects from the database's DEFAULT
-# schema at connect time. On PostgreSQL the search_path is cleared, so the
-# default schema is empty and there is nothing to cache -- a project using a
-# named SCHEMA (above) gets no benefit today. Your model classes reflect through
-# `Base.metadata` with autoload_with=, which this cache does not cover.
+# Off by default deliberately, on two grounds:
 #
-# It is wired up and correct (staleness is detected from a schema hash and the
-# cache is rebuilt on DDL changes); it just does not yet cover the metadata the
-# model templates actually use. See TODO.md -- unifying db.metadata,
-# Base.metadata, and SCHEMA is a pending design decision.
-CACHE_NAME = "myproject_metadata.pkl"
+#  1. It would not help. The cache stores `db.metadata`, which DatabaseConnection
+#     reflects from the database's DEFAULT schema at connect time. On PostgreSQL
+#     the search_path is cleared, so the default schema is empty and there is
+#     nothing to cache. Your model classes reflect through `Base.metadata` with
+#     autoload_with=, which this cache does not cover. See TODO.md: unifying
+#     db.metadata, Base.metadata and SCHEMA is a pending design decision.
+#
+#  2. Enabling it can turn a working connection into a failure. Cache writes are
+#     strict -- filesystem and pickle errors propagate rather than being
+#     swallowed -- so if $HOME is read-only (containers, CI, shared hosts), asking
+#     for a cache you cannot write is an error, by design.
+#
+# The machinery itself is correct: staleness is detected from a schema hash and
+# the cache is rebuilt when the schema changes. Turn it on only once it covers
+# metadata you actually use, and only where $HOME is writable.
+CACHE_NAME = None
 
 # =============================================================================
 # Passwords

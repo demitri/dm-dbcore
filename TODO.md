@@ -51,6 +51,27 @@ caching cannot currently speed up the thing it exists to speed up.
 - [ ] `TEMPLATE_Connection.py`'s CACHE_NAME comment currently documents this
       limitation honestly. Rewrite it once the design is settled.
 
+## Cache staleness hashes are low-fidelity
+
+Codex round 2. The hashes now work (they previously could not detect anything at
+all), but they under-detect. Low priority while caching covers nothing useful —
+revisit together with the unification item above.
+
+- [ ] PostgreSQL: `_compute_postgresql_schema_hash()` hashes only
+      schema/table/column, the broad `data_type`, and nullability. It will NOT
+      notice `VARCHAR(100)` -> `VARCHAR(200)`, numeric precision, column
+      defaults, enum/domain changes, identity/generated attributes, or
+      added/removed PK/FK/UNIQUE/CHECK constraints — so stale pickled metadata
+      would be accepted as current. Add `character_maximum_length`,
+      `numeric_precision`, `numeric_scale`, `column_default`, `udt_name`, and a
+      second query over `information_schema.table_constraints`.
+- [ ] MySQL: `_compute_mysql_schema_hash()` hashes `TABLES.UPDATE_TIME`, which
+      tracks DATA modification, not schema. Ordinary DML invalidates the cache;
+      some engines leave it NULL entirely. Hash `information_schema.COLUMNS` the
+      way PostgreSQL does.
+- [ ] Better still: hash a migration/schema revision number if the project has
+      one, rather than fingerprinting the catalogue.
+
 ## Singleton keying (codex, higher-level)
 
 `DatabaseConnection._singletons` is keyed by class only, and the instance is

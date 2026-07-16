@@ -1,369 +1,253 @@
 #!/usr/bin/env python
 """
-Test script for dm-dbcore package.
+Guided demo of dm-dbcore, run against a live database.
 
-This script demonstrates how to use dm-dbcore in a project:
-1. Create a custom Connection module with database credentials (see templates directory).
-2. Create a custom model classes file that defines all of the SQLAlchemy classes (again, see templates directory).
-3. Load models and query the database.
+NOTE: despite the name, this is a demonstration script, not a pytest suite.
+Importing it does nothing -- every step below runs only from main().
+
+It walks the four things a project built on dm-dbcore does, in order, and prints
+what each one produced:
+
+    1. Connect          -- DatabaseConnection, the singleton every module shares.
+    2. Metadata cache   -- reflection is slow; the cache makes startup fast.
+    3. session_scope    -- the transactional block: commit on success, roll back
+                           on exception.
+    4. Model classes    -- a class whose columns are REFLECTED from the database
+                           rather than declared. This is the pattern; see
+                           STYLE_GUIDE.md section 3 and templates/.
+
+Step 4 builds a real model class against a real table, so what it prints is
+proof the pattern works here, not an illustration of it.
 
 Usage:
-    python test_dm_dbcore.py
 
-This script expects:
-- A Connection module (e.g., myproject_connection.py) with database config
-- Model classes defined based on dm-dbcore templates
+    python test_dm_dbcore.py postgresql+psycopg://user@localhost:5432/mydb --schema core
+    python test_dm_dbcore.py sqlite:///local.sqlite --table users
+
+    DM_DBCORE_TEST_URL=sqlite:///local.sqlite python test_dm_dbcore.py
+
+Options:
+
+    --schema S   schema holding the tables; omit for SQLite/MySQL
+    --table T    table to reflect in step 4 (default: the first one found)
+
+Passwords belong in ~/.pgpass or ~/.my.cnf, not on the command line -- omit the
+password from the URL and the driver's password file supplies it.
+
+For a plain connection check with none of this narration, use
+scripts/db_connection_test.py instead.
 """
 
+import argparse
+import os
 import sys
-import logging
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+CACHE_NAME = "dm_dbcore_demo_metadata.pkl"
 
 
-def test_connection_module():
-    """
-    Test 1: Import and test custom connection module.
-
-    This assumes you've created a connection module from TEMPLATE_Connection.py
-    with your database credentials filled in.
-    """
-    print("=" * 70)
-    print("TEST 1: Database Connection")
-    print("=" * 70)
-
-    try:
-        # Import your custom connection module
-        # Example: from myproject.database import connection
-        # For this demo, we'll import dm_dbcore directly
-
-        from dm_dbcore import DatabaseConnection
-
-        # In a real project, you would use your connection module:
-        # from myproject_connection import get_database_connection
-        # db = get_database_connection()
-
-        # For this demo, create connection directly
-        # TODO: Update with your database credentials
-        connection_string = 'postgresql+psycopg://user:password@localhost/testdb'
-        # Or: connection_string = 'mysql://user:password@localhost/testdb'
-        # Or: connection_string = 'sqlite:///test.db'
-
-        print("\n[1.1] Creating database connection...")
-        db = DatabaseConnection(
-            database_connection_string=connection_string,
-            cache_name='test_metadata.pkl'
-        )
-        print(f"    ✓ Connected to {db.database_type} database")
-
-        return db
-
-    except Exception as e:
-        print(f"    ✗ Failed to create connection: {e}")
-        print("\nTo fix this:")
-        print("  1. Create a connection module using TEMPLATE_Connection.py")
-        print("  2. Fill in your database credentials")
-        print("  3. Import it in this script")
-        return None
-
-
-def test_metadata_loading(db):
-    """
-    Test 2: Check metadata reflection.
-
-    dm-dbcore automatically reflects database schema.
-    """
+def banner(title: str) -> None:
     print("\n" + "=" * 70)
-    print("TEST 2: Metadata Loading")
+    print(title)
     print("=" * 70)
 
-    if not db:
-        print("    ⊗ Skipped (no database connection)")
-        return False
 
-    try:
-        print("\n[2.1] Checking reflected metadata...")
-        if db.metadata and db.metadata.tables:
-            print(f"    ✓ Metadata loaded: {len(db.metadata.tables)} tables found")
-
-            print("\n[2.2] Sample tables:")
-            for i, table_name in enumerate(list(db.metadata.tables.keys())[:5]):
-                print(f"    - {table_name}")
-
-            if len(db.metadata.tables) > 5:
-                print(f"    ... and {len(db.metadata.tables) - 5} more")
-
-            return True
-        else:
-            print("    ⊗ No tables found (empty database or no permissions)")
-            return False
-
-    except Exception as e:
-        print(f"    ✗ Error: {e}")
-        return False
+# =============================================================================
+# 1. Connect
+# =============================================================================
 
 
-def test_model_classes(db):
-    """
-    Test 3: Load model classes.
+def demo_connection(url: str):
+    """Create the DatabaseConnection singleton. Returns the db object."""
+    banner("1. CONNECTION")
 
-    This assumes you've created model classes using TEMPLATE_ModelClasses*.py
-    """
-    print("\n" + "=" * 70)
-    print("TEST 3: Model Classes")
-    print("=" * 70)
+    from dm_dbcore import DatabaseConnection
 
-    if not db:
-        print("    ⊗ Skipped (no database connection)")
-        return False
+    # The first call needs the URL; every later DatabaseConnection() call
+    # anywhere in the process returns this same object. That is why a project
+    # has one connection module that everything else imports from.
+    db = DatabaseConnection(database_connection_string=url, cache_name=CACHE_NAME)
 
-    try:
-        # In a real project, you would import your model classes:
-        # from myproject.database.models import User, Post
-        # Model classes are configured automatically on import
-
-        print("\n[3.1] Importing model classes...")
-        print("    ⊗ No model classes defined yet")
-        print("\nTo add model classes:")
-        print("  1. Copy TEMPLATE_ModelClasses_PostgreSQL.py or TEMPLATE_ModelClasses_MySQL.py")
-        print("  2. Update schema/database name and table definitions")
-        print("  3. Import model classes - they configure automatically on import")
-
-        return False
-
-    except Exception as e:
-        print(f"    ✗ Error: {e}")
-        return False
+    print(f"database type : {db.database_type}")
+    print(f"url           : {db.engine.url}")  # password is masked by SQLAlchemy
+    print("The same object is returned by any later DatabaseConnection() call.")
+    return db
 
 
-def test_session_scope(db):
-    """
-    Test 4: Test session_scope context manager.
-
-    Demonstrates transactional database operations.
-    """
-    print("\n" + "=" * 70)
-    print("TEST 4: Session Management")
-    print("=" * 70)
-
-    if not db:
-        print("    ⊗ Skipped (no database connection)")
-        return False
-
-    try:
-        from dm_dbcore import session_scope
-        from sqlalchemy import text
-
-        print("\n[4.1] Testing session_scope context manager...")
-        with session_scope(db) as session:
-            # Simple query to test connection
-            if db.database_type == 'postgresql':
-                result = session.execute(text("SELECT version()"))
-            elif db.database_type == 'mysql':
-                result = session.execute(text("SELECT VERSION()"))
-            elif db.database_type == 'sqlite':
-                result = session.execute(text("SELECT sqlite_version()"))
-            else:
-                result = None
-
-            if result:
-                version = result.scalar()
-                print(f"    ✓ Session created and query executed")
-                print(f"    Database version: {version}")
-
-        print("    ✓ Session closed automatically")
-
-        return True
-
-    except Exception as e:
-        print(f"    ✗ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+# =============================================================================
+# 2. Metadata cache
+# =============================================================================
 
 
-def test_cache_management(db):
-    """
-    Test 5: Metadata cache management.
+def demo_metadata_cache(db) -> None:
+    """Report the reflected metadata and where it is cached."""
+    banner("2. METADATA CACHE")
 
-    Shows how metadata caching improves startup performance.
-    """
-    print("\n" + "=" * 70)
-    print("TEST 5: Metadata Cache")
-    print("=" * 70)
+    import datetime
+    import pathlib
 
-    if not db:
-        print("    ⊗ Skipped (no database connection)")
-        return False
+    tables = sorted(db.metadata.tables) if db.metadata is not None else []
+    print(f"tables reflected into db.metadata : {len(tables)}")
+    for name in tables[:5]:
+        print(f"  - {name}")
+    if len(tables) > 5:
+        print(f"  ... and {len(tables) - 5} more")
+    if not tables:
+        # Not a failure. dm-dbcore reflects the DEFAULT schema at connect time
+        # and clears the PostgreSQL search_path first, so a project whose tables
+        # live in a named schema legitimately sees nothing here. Step 4 reflects
+        # from the named schema explicitly, which is how models do it.
+        print("  (empty -- expected when the tables live in a named schema; see step 4)")
 
-    try:
-        import pathlib
-
-        cache_dir = pathlib.Path.home() / '.sqlalchemy_cache'
-        cache_file = cache_dir / 'test_metadata.pkl'
-
-        print(f"\n[5.1] Cache location: {cache_file}")
-        if cache_file.exists():
-            print(f"    ✓ Cache file exists")
-            import datetime
-            mtime = datetime.datetime.fromtimestamp(cache_file.stat().st_mtime)
-            print(f"    Last modified: {mtime}")
-        else:
-            print(f"    ⊗ Cache file not created yet")
-            print("    (Will be created on next startup)")
-
-        return True
-
-    except Exception as e:
-        print(f"    ✗ Error: {e}")
-        return False
+    cache_file = pathlib.Path.home() / ".sqlalchemy_cache" / CACHE_NAME
+    print(f"\ncache file : {cache_file}")
+    if cache_file.exists():
+        mtime = datetime.datetime.fromtimestamp(cache_file.stat().st_mtime)
+        print(f"  written {mtime}. Startup reuses it; a schema change invalidates it.")
+    else:
+        print("  not written yet.")
 
 
-def demonstrate_usage_patterns():
-    """
-    Show common usage patterns for dm-dbcore.
-    """
-    print("\n" + "=" * 70)
-    print("USAGE PATTERNS")
-    print("=" * 70)
+# =============================================================================
+# 3. session_scope
+# =============================================================================
 
-    print("""
-1. PROJECT STRUCTURE (Recommended):
 
-    myproject/
-    ├── database/
-    │   ├── __init__.py
-    │   ├── connection.py          # From TEMPLATE_Connection.py
-    │   ├── schema1_models.py      # From TEMPLATE_ModelClasses_PostgreSQL.py
-    │   └── schema2_models.py      # From TEMPLATE_ModelClasses_MySQL.py
-    └── scripts/
-        └── query_example.py
+def demo_session_scope(db) -> None:
+    """Run a query inside the transactional context manager."""
+    banner("3. SESSION SCOPE")
 
-2. CONNECTION MODULE (database/connection.py):
+    from sqlalchemy import text
 
-    from dm_dbcore import DatabaseConnection, session_scope
+    from dm_dbcore import DBTYPE_MYSQL, DBTYPE_POSTGRESQL, DBTYPE_SQLITE, session_scope
 
-    DB_HOST = 'localhost'
-    DB_DATABASE = 'mydb'
-    DB_USER = 'myuser'
+    version_query = {
+        DBTYPE_POSTGRESQL: "SELECT version()",
+        DBTYPE_MYSQL: "SELECT VERSION()",
+        DBTYPE_SQLITE: "SELECT sqlite_version()",
+    }[db.database_type]
 
-    def get_database_connection():
-        connection_string = f'postgresql+psycopg://{DB_USER}@{DB_HOST}/{DB_DATABASE}'
-        return DatabaseConnection(
-            database_connection_string=connection_string,
-            cache_name='myproject_metadata.pkl'
-        )
+    # session_scope commits on exit, rolls back if the block raises, and always
+    # closes. Project connection modules wrap this into a no-argument
+    # session_scope() so callers never handle the db object.
+    with session_scope(db) as session:
+        print(f"server : {session.execute(text(version_query)).scalar()}")
 
-3. MODEL CLASSES (database/schema1_models.py):
+    print("Session committed and closed on exit from the with-block.")
 
-    from sqlalchemy.orm import registry, relationship
-    from sqlalchemy import Column, Integer, ForeignKey
 
-    mapper_registry = registry()
+# =============================================================================
+# 4. Model classes -- reflection, not declaration
+# =============================================================================
 
-    @mapper_registry.mapped
-    class User:
-        __tablename__ = 'users'
-        __table_args__ = {'schema': 'myschema', 'autoload': True}
 
-        id = Column(Integer, primary_key=True)
+def demo_model_class(db, schema, table_name) -> int:
+    """Build a model class by reflecting a real table. Returns an exit status."""
+    banner("4. MODEL CLASSES")
 
-        posts = relationship('Post', back_populates='author')
+    import warnings
 
-4. USING IN APPLICATION:
+    from sqlalchemy import Table, func, inspect, select
+    from sqlalchemy.orm import DeclarativeBase, configure_mappers
 
-    from database.connection import get_database_connection
-    from database.schema1_models import User
     from dm_dbcore import session_scope
 
-    # Initialize (model classes configure automatically on import)
-    db = get_database_connection()
+    # Reflection warns about column types it cannot map to a specialised Python
+    # type. Harmless: the column is still reflected.
+    warnings.filterwarnings(action="ignore", message="Skipped unsupported reflection")
 
-    # Query
+    available = sorted(inspect(db.engine).get_table_names(schema=schema))
+    if not available:
+        print(f"No tables in schema {schema or 'default'} -- nothing to reflect.")
+        print("Does the schema match the database, and can this user see it?")
+        return 1
+
+    if table_name is None:
+        table_name = available[0]
+        print(f"No --table given; using the first table found: {table_name}")
+    elif table_name not in available:
+        print(f"Table {table_name!r} is not in schema {schema or 'default'}.")
+        print(f"Available: {', '.join(available)}")
+        return 1
+
+    class Base(DeclarativeBase):
+        """Declarative base for this demo's model classes."""
+
+    class Reflected(Base):
+        """The table named on the command line, mapped by reflection."""
+
+        __table__ = Table(table_name, Base.metadata, schema=schema, autoload_with=db.engine)
+
+    # Validate every mapping now rather than at the first query.
+    configure_mappers()
+
+    print(f"\nclass Reflected(Base):  ->  {schema or 'default'}.{table_name}")
+    print("Its columns were never typed out; the database supplied them:\n")
+    for column in Reflected.__table__.columns:
+        flags = []
+        if column.primary_key:
+            flags.append("primary key")
+        if column.foreign_keys:
+            flags.append("-> " + ", ".join(str(fk.target_fullname) for fk in column.foreign_keys))
+        suffix = f"  ({'; '.join(flags)})" if flags else ""
+        print(f"  {column.name:24s} {str(column.type):20s}{suffix}")
+
     with session_scope(db) as session:
-        users = session.query(User).all()
-        for user in users:
-            print(user)
+        count = session.execute(select(func.count()).select_from(Reflected.__table__)).scalar()
+        print(f"\nrows : {count}")
+        first = session.scalars(select(Reflected)).first()
+        if first is not None:
+            print(f"first row maps to : {first!r}")
 
-5. TESTING YOUR SETUP:
-
-    # Test connection
-    from database.connection import test_connection
-    info = test_connection()
-    print(f"Connected: {info['connected']}")
-
-    # Clear cache if schema changed
-    from database.connection import clear_metadata_cache
-    clear_metadata_cache()
-""")
+    print(
+        "\nWhat reflection does NOT supply is relationship() -- 'student.city' vs\n"
+        "'city.students' is a Python decision, not a database one. Write those by\n"
+        "hand at the bottom of the model file; see templates/TEMPLATE_ModelClasses.py."
+    )
+    return 0
 
 
-def main():
-    """Run all tests."""
-
-    print("\n" + "=" * 70)
-    print("DMUNA-DBCORE PACKAGE TEST")
-    print("=" * 70)
-    print("\nThis script demonstrates how to use dm-dbcore in your project.")
-    print("Each test shows a different aspect of the package.\n")
-
-    # Run tests
-    db = test_connection_module()
-    test_metadata_loading(db)
-    test_model_classes(db)
-    test_session_scope(db)
-    test_cache_management(db)
-
-    # Show usage patterns
-    demonstrate_usage_patterns()
-
-    # Summary
-    print("\n" + "=" * 70)
-    print("TEST SUMMARY")
-    print("=" * 70)
-    print("""
-To use dm-dbcore in your project:
-
-1. Install the package:
-   pip install dm-dbcore
-
-2. Copy templates from dm-dbcore/templates/:
-   - TEMPLATE_Connection.py → your_connection.py
-   - TEMPLATE_ModelClasses_PostgreSQL.py → your_models.py (or MySQL version)
-
-3. Fill in your database credentials in your_connection.py
-
-4. Define your model classes in your_models.py
-
-5. Import and use (model classes configure automatically on import):
-   from your_connection import get_database_connection
-   from your_models import User
-   from dm_dbcore import session_scope
-
-   db = get_database_connection()
-
-   with session_scope(db) as session:
-       users = session.query(User).all()
-
-For more details, see:
-- dm-dbcore/README.md
-- dm-dbcore/templates/README.md
-""")
+# =============================================================================
+# Command line
+# =============================================================================
 
 
-if __name__ == '__main__':
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description="Demonstrate dm-dbcore against a live database.")
+    parser.add_argument(
+        "url",
+        nargs="?",
+        default=os.environ.get("DM_DBCORE_TEST_URL"),
+        help="SQLAlchemy URL, e.g. postgresql+psycopg://user@host/db (default: $DM_DBCORE_TEST_URL)",
+    )
+    parser.add_argument(
+        "--schema",
+        default=os.environ.get("DM_DBCORE_TEST_SCHEMA"),
+        help="schema holding the tables; omit for SQLite/MySQL (default: $DM_DBCORE_TEST_SCHEMA)",
+    )
+    parser.add_argument("--table", help="table to reflect in step 4 (default: the first one found)")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    """Run every step in order. Returns a process exit status."""
+    args = parse_args(argv)
+
+    if not args.url:
+        print(
+            "No database given. Pass a URL or set $DM_DBCORE_TEST_URL.\nTry --help.",
+            file=sys.stderr,
+        )
+        return 2
+
+    db = demo_connection(args.url)
+    demo_metadata_cache(db)
+    demo_session_scope(db)
+    return demo_model_class(db, args.schema, args.table)
+
+
+if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except KeyboardInterrupt:
-        print("\n\nInterrupted by user")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n\n✗ Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        print("\nInterrupted.", file=sys.stderr)
+        raise SystemExit(130)
