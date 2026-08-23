@@ -11,6 +11,7 @@ PostgreSQL server (see tests/test_postgresql_roundtrip.py).
 
 import pytest
 from sqlalchemy import MetaData, create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 from dm_dbcore import (
     DatabaseConnection,
@@ -209,7 +210,10 @@ def test_session_scope_rolls_back_on_a_database_error(widget_db):
     with session_scope(widget_db) as session:
         session.execute(text("INSERT INTO widget (id, name) VALUES (1, 'first')"))
 
-    with pytest.raises(Exception):
+    # IntegrityError specifically, not Exception: a bare `raises(Exception)`
+    # would pass just as happily if the test itself were broken and threw
+    # something unrelated, certifying a rollback that never happened.
+    with pytest.raises(IntegrityError):
         with session_scope(widget_db) as session:
             session.execute(text("INSERT INTO widget (name) VALUES ('second')"))
             session.execute(text("INSERT INTO widget (id, name) VALUES (1, 'duplicate')"))

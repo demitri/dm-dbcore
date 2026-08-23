@@ -185,6 +185,23 @@ This is a prerequisite for "Make `~/.my.cnf` just work" above: that plan has
 dm-dbcore reading the file automatically, which would have hit this on the
 first real config file it met.
 
+## ~~An unreadable `~/.my.cnf` read as an absent one~~ — FIXED 2026-08-23
+
+Found by the mandatory silent-skip pass over the commits above, in the same
+function. `_load_my_cnf_parser()` wrapped the read in `except OSError: return
+None` — the identical return to "the file does not exist". So a `~/.my.cnf`
+with the wrong permissions, which is the commonest way to break one, silently
+became "no password found", and the user got MySQL's bare "Access denied" with
+nothing pointing at the real cause.
+
+The `exists()` check above it already covers the one case that legitimately
+means "nothing configured". The read is now unguarded, so a permission error
+surfaces as a permission error. This is the "Fail loudly, not silently" bullet
+of the `~/.my.cnf` plan above, applied to the read path.
+
+Covered by
+`tests/test_mysql_utils.py::test_an_unreadable_file_raises_rather_than_reading_as_absent`.
+
 ## MetadataCache's default cache directory is bound at import time
 
 ```python
@@ -236,7 +253,7 @@ is tested on 3.8 through 3.13.
 
 ## Coverage baseline and where the gaps are
 
-First measured baseline, offline (no PostgreSQL): **71%** overall, 203 tests.
+First measured baseline, offline (no PostgreSQL): **68%** overall, 204 tests.
 The gaps are known, not mysterious:
 
 - `numpy_postgresql_psycopg2.py` — 0%, 51 statements. The deliberate reference
@@ -250,6 +267,12 @@ The gaps are known, not mysterious:
 - `ast_pg_geometry.py` — 25%. Needs both `cornish` and a live server.
 - No `fail_under` is set. A threshold nobody has measured is a guess. Set one
   from a real baseline once CI has reported a few runs on `main`.
+- No `exclude_also` either. A draft of this config excluded the
+  optional-dependency guards and scored 71%. Measured against no exclusions at
+  all, that was three points bought by hiding 48 statements — and it was wrong
+  on its own terms, because CI does not install `cornish`, so the
+  `except ImportError:` fallback in `ast_pg_geometry.py` genuinely executes
+  there. The exclusion was discarding coverage that was being achieved.
 
 ## Two sources of packaging truth
 

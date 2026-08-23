@@ -118,6 +118,27 @@ def test_valueless_options_are_tolerated(write_cnf):
     assert read_password_from_my_cnf(mycnf_path=path) == "s3cret"
 
 
+def test_an_unreadable_file_raises_rather_than_reading_as_absent(write_cnf):
+    """A file that exists but cannot be read is not the same as no file.
+
+    Conflating the two turned the commonest ~/.my.cnf misconfiguration -- wrong
+    permissions -- into a silent "no password found", leaving the user with
+    MySQL's bare "Access denied" and nothing pointing at the real cause.
+    """
+    import os
+    import stat
+
+    path = write_cnf("[client]\npassword=s3cret\n")
+    os.chmod(path, 0o000)
+    try:
+        if os.access(path, os.R_OK):  # root, or a filesystem ignoring the mode
+            pytest.skip("this user can read a mode-000 file; permissions not enforced here")
+        with pytest.raises(OSError):
+            read_password_from_my_cnf(mycnf_path=path)
+    finally:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+
+
 def test_password_keyword_arguments_are_keyword_only(write_cnf):
     """The signature is keyword-only; positional use is a TypeError, not a silent mismatch."""
     path = write_cnf("[client]\npassword=s3cret\n")

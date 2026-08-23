@@ -126,11 +126,16 @@ def _load_my_cnf_parser(mycnf_path: str) -> Optional[ConfigParser]:
     # for truth, so a valueless key is never mistaken for a setting.
     parser = ConfigParser(allow_no_value=True)
     parser.optionxform = str  # preserve case
-    try:
-        with config_path.open() as handle:
-            parser.read_file(handle)
-    except OSError:
-        return None
+
+    # No try/except around the read. A file that exists but cannot be read is
+    # not the same thing as no file at all, and this used to return None for
+    # both: a ~/.my.cnf with the wrong permissions -- the single most common way
+    # to break one -- silently became "no password found", and the user got
+    # MySQL's bare "Access denied" instead of being told their config file was
+    # unreadable. The absent-file case is already handled above by exists(),
+    # which is the only case that legitimately means "nothing configured".
+    with config_path.open() as handle:
+        parser.read_file(handle)
 
     return parser
 

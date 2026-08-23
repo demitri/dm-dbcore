@@ -80,14 +80,14 @@ skip_covered = false
 # No fail_under. A threshold nobody has measured is a guess, and a guessed
 # ratchet either blocks honest work or passes vacuously. Set one from a real
 # baseline once CI has reported a few runs.
-exclude_also = [
-    # Guards for optional dependencies (numpy, psycopg, cornish). Whichever
-    # branch this environment does not take cannot be covered here; the other
-    # environment covers it. The CI matrix installs the extras, so the
-    # available-path branches are the ones measured.
-    "if not _NUMPY_AVAILABLE:",
-    "except ImportError:",
-    "if TYPE_CHECKING:",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-]
+#
+# No `exclude_also` either. An earlier draft excluded the optional-dependency
+# guards ("except ImportError:", "if not _NUMPY_AVAILABLE:") on the usual
+# reasoning that an environment with the package installed cannot take the
+# absent-package branch. Measured, that exclusion moved the total from 68% to
+# 71% by making 48 statements vanish -- and it was wrong on its own terms: CI
+# does NOT install cornish, so the ImportError fallback in ast_pg_geometry.py
+# (a block of placeholder classes) really does execute there. Excluding it
+# discarded coverage that was actually being achieved, and hid real code that
+# nothing had ever checked. Same principle as the `omit` note above: report the
+# number the code earns.

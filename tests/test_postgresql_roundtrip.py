@@ -171,12 +171,23 @@ def test_xml_round_trips(pg_db, pg_table):
 
 
 def test_citext_compares_case_insensitively(pg_db, pg_table):
-    """citext is an extension; skip if this database does not have it available."""
+    """citext is a contrib extension, so ask whether it is available first.
+
+    Deliberately no try/except around CREATE EXTENSION. Wrapping it would turn
+    every failure into the same skip -- including a dropped connection or a
+    privilege problem, which are real failures wearing a skip's clothes. A
+    plain SELECT against pg_available_extensions answers the only question that
+    justifies skipping; anything else that goes wrong here should fail the test.
+    """
+    with pg_db.engine.connect() as connection:
+        available = connection.execute(
+            text("SELECT 1 FROM pg_available_extensions WHERE name = 'citext'")
+        ).scalar()
+    if not available:
+        pytest.skip("the citext extension is not installed on this PostgreSQL server")
+
     with pg_db.engine.begin() as connection:
-        try:
-            connection.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
-        except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
-            pytest.skip(f"citext extension unavailable on this server: {exc}")
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
 
     table = pg_table("dm_dbcore_citext", "value CITEXT")
     with pg_db.engine.begin() as connection:
