@@ -36,6 +36,7 @@ import os
 import pickle
 import pathlib
 import logging
+import threading
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -338,6 +339,16 @@ class DatabaseConnection(object):
 	'''
 	_singletons = dict()
 
+	# Guards first construction. Without it the check/build/register sequence
+	# is unsynchronized: building a connection validates it and reflects the
+	# schema, both of which do I/O and release the GIL, so two threads calling
+	# DatabaseConnection() at once could both find _singletons empty, both
+	# build a full object, and hand their callers two different "singletons"
+	# with two different engines and session registries -- only one of which
+	# is the one actually stored. RLock, not Lock, so that re-entering
+	# construction on the same thread cannot self-deadlock.
+	_singleton_lock = threading.RLock()
+
 	def determine_database_type(self):
 		'''
 		Determine the database type from the connection string.
@@ -496,102 +507,109 @@ class DatabaseConnection(object):
 	def __new__(cls, database_connection_string=None, cache_name=None):
 		"""This overrides the object's usual creation mechanism."""
 
+		# Double-checked: once the singleton exists the fast path is a plain
+		# dict lookup with no locking at all, and the lock is taken only when
+		# one might need building. The second check inside the lock is the one
+		# that matters -- another thread may have finished building while this
+		# one waited for the lock.
 		if not cls in cls._singletons:
-			assert database_connection_string is not None, "A database connection string must be specified!"
+			with cls._singleton_lock:
+				if not cls in cls._singletons:
+					assert database_connection_string is not None, "A database connection string must be specified!"
 
-			# ------------------------------------------------
-			# This is the custom initialization
-			# ------------------------------------------------
-			# The instance is built into a local and registered in _singletons
-			# only after initialization has fully succeeded. It used to be
-			# registered on the line that created it, before the connection was
-			# validated and the schema reflected -- so a failure anywhere below
-			# (an unreachable server, bad credentials, a reflection error) left
-			# a half-built object permanently installed as *the* singleton. The
-			# caller saw the real exception once, then every later call --
-			# including one with a perfectly good connection string -- got that
-			# wreck back with no `metadata` and no `Session`, failing later and
-			# somewhere else with an AttributeError. Failed construction now
-			# leaves no trace and the next attempt starts clean.
-			me = object.__new__(cls) # just for convenience (think "self")
+					# ------------------------------------------------
+					# This is the custom initialization
+					# ------------------------------------------------
+					# The instance is built into a local and registered in _singletons
+					# only after initialization has fully succeeded. It used to be
+					# registered on the line that created it, before the connection was
+					# validated and the schema reflected -- so a failure anywhere below
+					# (an unreachable server, bad credentials, a reflection error) left
+					# a half-built object permanently installed as *the* singleton. The
+					# caller saw the real exception once, then every later call --
+					# including one with a perfectly good connection string -- got that
+					# wreck back with no `metadata` and no `Session`, failing later and
+					# somewhere else with an AttributeError. Failed construction now
+					# leaves no trace and the next attempt starts clean.
+					me = object.__new__(cls) # just for convenience (think "self")
 
-			me.database_connection_string = database_connection_string
+					me.database_connection_string = database_connection_string
 
-			# Determine database type from connection string.
-			me.database_type = me.determine_database_type()
+					# Determine database type from connection string.
+					me.database_type = me.determine_database_type()
 
-			# Load database-specific adapters
-			if me.database_type == DBTYPE_POSTGRESQL:
-				cls.load_postgresql_database_adapters()
-			elif me.database_type == DBTYPE_MYSQL:
-				cls.load_mysql_database_adapters()
-			elif me.database_type == DBTYPE_SQLITE:
-				cls.load_sqlite_database_adapters()
+					# Load database-specific adapters
+					if me.database_type == DBTYPE_POSTGRESQL:
+						cls.load_postgresql_database_adapters()
+					elif me.database_type == DBTYPE_MYSQL:
+						cls.load_mysql_database_adapters()
+					elif me.database_type == DBTYPE_SQLITE:
+						cls.load_sqlite_database_adapters()
 
-			engine_kwargs = {
-				'pool_pre_ping': True,
-				'future': True,
-				'echo': False    # set to True to print each SQL query (for debugging/optimizing/the curious)
-			}
-			# pool_size=?? # number of permanent database connections
+					engine_kwargs = {
+						'pool_pre_ping': True,
+						'future': True,
+						'echo': False    # set to True to print each SQL query (for debugging/optimizing/the curious)
+					}
+					# pool_size=?? # number of permanent database connections
 
-			# NOTE: MySQL previously forced connect_args={'host': '127.0.0.1'}
-			# here, intending to avoid Unix-socket connections. SQLAlchemy merges
-			# connect_args AFTER parsing the URL, so it overrode whatever host the
-			# caller configured and silently sent every MySQL connection to
-			# localhost. Removed: the host in the URL is the host. To use a Unix
-			# socket, say so in the URL (?unix_socket=/path); to force TCP, name a
-			# host or 127.0.0.1 there.
+					# NOTE: MySQL previously forced connect_args={'host': '127.0.0.1'}
+					# here, intending to avoid Unix-socket connections. SQLAlchemy merges
+					# connect_args AFTER parsing the URL, so it overrode whatever host the
+					# caller configured and silently sent every MySQL connection to
+					# localhost. Removed: the host in the URL is the host. To use a Unix
+					# socket, say so in the URL (?unix_socket=/path); to force TCP, name a
+					# host or 127.0.0.1 there.
 
-			me.engine = create_engine(me.database_connection_string, **engine_kwargs)
+					me.engine = create_engine(me.database_connection_string, **engine_kwargs)
 
-			try:
-				# Validate the connection before proceeding
-				# This provides clear error messages for common issues
-				try:
-					DatabaseConnection.validate_connection(me.engine, me.database_type)
-				except RuntimeError as e:
-					# Re-raise with additional context about where this failed
-					raise RuntimeError(
-						f"Failed to establish database connection during DatabaseConnection initialization.\n{e}"
-					) from e
+					try:
+						# Validate the connection before proceeding
+						# This provides clear error messages for common issues
+						try:
+							DatabaseConnection.validate_connection(me.engine, me.database_type)
+						except RuntimeError as e:
+							# Re-raise with additional context about where this failed
+							raise RuntimeError(
+								f"Failed to establish database connection during DatabaseConnection initialization.\n{e}"
+							) from e
 
-				me.metadata = None
-				me.metadataCache = None
+						me.metadata = None
+						me.metadataCache = None
 
-				# Load pickle'd metadata or create it from the database.
-				if cache_name:
-					me.metadataCache = MetadataCache(dbc=me, filename=cache_name)
-					me.metadataCache.read()
-					if me.metadataCache.metadata is not None:
-						me.metadata = me.metadataCache.metadata
+						# Load pickle'd metadata or create it from the database.
+						if cache_name:
+							me.metadataCache = MetadataCache(dbc=me, filename=cache_name)
+							me.metadataCache.read()
+							if me.metadataCache.metadata is not None:
+								me.metadata = me.metadataCache.metadata
 
-				if me.metadata is None:
-					# Not cached (or the cache was stale): reflect from the database.
-					me.metadata = MetaData()
-					me.metadata.reflect(bind=me.engine) # optionally can reflect specific tables
+						if me.metadata is None:
+							# Not cached (or the cache was stale): reflect from the database.
+							me.metadata = MetaData()
+							me.metadata.reflect(bind=me.engine) # optionally can reflect specific tables
 
-					# Persist it. Without this the cache was never written, so
-					# `cache_name` bought nothing: every startup re-reflected and
-					# read() found nothing to load.
-					if me.metadataCache is not None:
-						me.metadataCache.write(me.metadata)
+							# Persist it. Without this the cache was never written, so
+							# `cache_name` bought nothing: every startup re-reflected and
+							# read() found nothing to load.
+							if me.metadataCache is not None:
+								me.metadataCache.write(me.metadata)
 
-				me.Session = scoped_session(sessionmaker(me.engine))
-			except BaseException:
-				# Nothing is suppressed here. The engine created above owns a
-				# connection pool that a failed construction would otherwise
-				# leak, so it is disposed and the original exception re-raised
-				# unchanged -- the caller sees exactly what went wrong.
-				me.engine.dispose()
-				raise
+						me.Session = scoped_session(sessionmaker(me.engine))
+					except BaseException:
+						# Nothing is suppressed here. The engine created above owns a
+						# connection pool that a failed construction would otherwise
+						# leak, so it is disposed and the original exception re-raised
+						# unchanged -- the caller sees exactly what went wrong.
+						me.engine.dispose()
+						raise
 
-			# Registered only now that initialization has fully succeeded and
-			# every attribute the class promises is in place. See the note at
-			# the top of this block.
-			cls._singletons[cls] = me
+					# Registered only now that initialization has fully succeeded and
+					# every attribute the class promises is in place. See the note at
+					# the top of this block.
+					cls._singletons[cls] = me
 
-			# ------------------------------------------------
+					# ------------------------------------------------
 
 		return cls._singletons[cls]
 

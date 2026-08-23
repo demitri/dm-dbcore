@@ -33,6 +33,24 @@ from dm_dbcore.adapters.postgresql.pgxml import PGXML
 
 np = pytest.importorskip("numpy") if _NUMPY_AVAILABLE else None
 
+# PGPolygon holds its points in an ndarray, so the polygon tests that build or
+# read one genuinely need NumPy -- which the [postgresql] extra does not pull
+# in. Without these markers `np` is None and those tests died on
+# "'NoneType' object has no attribute 'array'", which says nothing about what
+# is actually missing. Everything else in this file -- points, circles, citext,
+# xml, and the polygon paths that do not touch an array -- runs either way.
+requires_numpy = pytest.mark.skipif(
+    not _NUMPY_AVAILABLE, reason="numpy not installed (pip install dm-dbcore[numpy])"
+)
+
+# The mirror image: these pin what happens when NumPy is *absent*. The library
+# is written to raise a RuntimeError naming the missing package rather than
+# fail obscurely, and that promise was untested until CI grew a job with no
+# optional dependencies installed.
+without_numpy = pytest.mark.skipif(
+    _NUMPY_AVAILABLE, reason="numpy is installed; these pin the behaviour when it is not"
+)
+
 
 # --------------------------------------------------------------------------
 # PGPoint
@@ -161,21 +179,25 @@ def test_polygon_no_args_needs_no_numpy():
     assert polygon.get_col_spec() == "POLYGON"
 
 
+@requires_numpy
 def test_polygon_rejects_unhandled_types():
     with pytest.raises(ValueError):
         PGPolygon(points=[(1, 2), (3, 4)])
 
 
+@requires_numpy
 def test_polygon_reads_postgresql_text():
     polygon = PGPolygon().result_processor(None, None)("((1,2),(3,4),(4,5))")
     assert np.array_equal(polygon.points, np.array([[1, 2], [3, 4], [4, 5]]))
     assert len(polygon) == 3
 
 
+@requires_numpy
 def test_polygon_result_processor_passes_null_through():
     assert PGPolygon().result_processor(None, None)(None) is None
 
 
+@requires_numpy
 def test_polygon_binds_a_data_literal_not_sql():
     """The bound value is DATA: no quotes, no ::POLYGON cast.
 
@@ -189,6 +211,7 @@ def test_polygon_binds_a_data_literal_not_sql():
     assert "::" not in literal
 
 
+@requires_numpy
 def test_polygon_bind_accepts_a_raw_ndarray():
     """The value need not already be wrapped in a PGPolygon."""
     process = PGPolygon().bind_processor(None)
@@ -201,6 +224,7 @@ def test_polygon_bind_passes_null_through():
     assert process(PGPolygon()) is None
 
 
+@requires_numpy
 def test_polygon_read_then_write_round_trips():
     """The exact bug class the psycopg3 port fixed: read a value, write it back."""
     text_from_db = "((1,2),(3,4),(4,5))"
@@ -208,9 +232,47 @@ def test_polygon_read_then_write_round_trips():
     assert PGPolygon().bind_processor(None)(value) == text_from_db
 
 
-def test_polygon_literal_accepts_lists_and_arrays():
+def test_polygon_literal_accepts_a_list_of_pairs():
+    """The list path needs no NumPy, so it is checked on its own."""
     assert _polygon_literal([(1, 2), (3, 4)]) == "((1,2),(3,4))"
+
+
+@requires_numpy
+def test_polygon_literal_accepts_an_ndarray():
     assert _polygon_literal(np.array([[1, 2], [3, 4]])) == "((1,2),(3,4))"
+
+
+# --------------------------------------------------------------------------
+# PGPolygon without NumPy
+#
+# NumPy is optional and the [postgresql] extra does not pull it in, so this is
+# a configuration real users will have. The library promises to say what is
+# missing rather than fail on an obscure TypeError or AttributeError; these
+# tests hold it to that. They run only in the minimal-install CI job, which
+# exists precisely so these paths are executed somewhere.
+# --------------------------------------------------------------------------
+
+@without_numpy
+def test_constructing_a_polygon_with_points_without_numpy_names_numpy():
+    with pytest.raises(RuntimeError, match="NumPy"):
+        PGPolygon(points=[(1, 2), (3, 4)])
+
+
+@without_numpy
+def test_reading_a_polygon_column_without_numpy_names_numpy():
+    with pytest.raises(RuntimeError, match="NumPy"):
+        PGPolygon().result_processor(None, None)
+
+
+@without_numpy
+def test_a_polygon_column_can_still_be_reflected_without_numpy():
+    """The guard must not spread: declaring the column type still works."""
+    assert PGPolygon().get_col_spec() == "POLYGON"
+
+
+@without_numpy
+def test_polygon_literal_still_handles_lists_without_numpy():
+    assert _polygon_literal([(1, 2), (3, 4)]) == "((1,2),(3,4))"
 
 
 # --------------------------------------------------------------------------
@@ -244,6 +306,7 @@ def test_dumper_is_registered_and_emits_postgresql_text(value, expected):
 
 
 @pytestmark_psycopg
+@requires_numpy
 def test_polygon_dumper_is_registered():
     import psycopg
     from psycopg.abc import PyFormat

@@ -9,6 +9,8 @@ detection is PostgreSQL- and MySQL-only, and the geometric adapters need a
 PostgreSQL server (see tests/test_postgresql_roundtrip.py).
 """
 
+import threading
+
 import pytest
 from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy.exc import IntegrityError
@@ -333,3 +335,39 @@ def test_a_good_connection_works_after_a_failed_one(reset_singleton, tmp_path, s
     # And it is genuinely usable, not merely populated.
     with db.engine.connect() as conn:
         assert conn.execute(text("SELECT 1")).fetchone()[0] == 1
+
+
+def test_concurrent_first_callers_get_the_same_instance(reset_singleton, sqlite_url):
+    """Two threads racing to build the first instance must share one object.
+
+    Construction validates the connection and reflects the schema, both of
+    which do I/O and release the GIL. An unsynchronized check/build/register
+    let both threads see an empty registry and build a complete object each,
+    so two callers held two different "singletons" -- two engines, two session
+    registries -- and only the second was ever stored. Work done through the
+    other one went to an object nothing else in the process could reach.
+    """
+    barrier = threading.Barrier(2)
+    results = []
+    errors = []
+
+    def build():
+        try:
+            barrier.wait(timeout=10)
+            results.append(DatabaseConnection(database_connection_string=sqlite_url))
+        except BaseException as exc:  # noqa: BLE001 -- recorded and re-raised below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=build) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "construction deadlocked"
+
+    assert not errors, f"construction raised: {errors}"
+    assert len(results) == 2
+    assert results[0] is results[1], "the two threads built two different singletons"
+    assert results[0] is DatabaseConnection._singletons[DatabaseConnection], (
+        "the instance handed to callers is not the one that was registered"
+    )
