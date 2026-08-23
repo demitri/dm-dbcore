@@ -1,11 +1,21 @@
 #!/usr/bin/env python
-
-__author__ = "Demitri Muna"
-
 '''
-Classes to add support for PostgreSQL geometric data types that SQLAlchemy doesn't natively support.
+Astronomy-flavoured PostgreSQL geometric types, backed by the `cornish` library.
 
-These adapters work with the 'cornish' astronomy library for astronomical coordinate systems.
+Same two PostgreSQL column types as ``pggeometry`` -- circle and polygon -- but
+reading one returns a ``cornish.ASTCircle`` / ``cornish.ASTPolygon`` on an ICRS
+frame rather than a plain PGCircle / PGPolygon.
+
+These are the one case that needs manual registration. ``DatabaseConnection``
+auto-registers the plain types, so to get these instead you must override the
+``ischema_names`` entries BEFORE your model classes are imported (reflection
+reads that mapping at import time). See the USAGE block below.
+
+Requires the astronomy extra: ``pip install dm-dbcore[astronomy]``. Without
+numpy and cornish the module still imports -- so a downstream
+``from dm_dbcore.adapters import PGASTCircle`` does not explode on a machine
+that lacks them -- but instantiating either class raises ImportError naming
+what to install.
 
 USAGE:
 
@@ -37,6 +47,8 @@ This module requires:
 If these dependencies are not available, the classes can still be imported but will
 raise an error when instantiated.
 '''
+
+__author__ = "Demitri Muna"
 
 import ast  # Abstract Syntax Trees / https://docs.python.org/3.7/library/ast.html
 import sqlalchemy.types as types

@@ -1,5 +1,36 @@
 #!/usr/bin/python
-#
+"""
+The connection layer: one database connection, shared by every module.
+
+Three things live here.
+
+``DatabaseConnection``
+    A singleton. The first caller passes a SQLAlchemy URL and gets a connected
+    object with an ``engine``, a scoped ``Session`` factory, and reflected
+    ``metadata``; every later ``DatabaseConnection()`` returns that same object
+    with no arguments. The URL decides the backend, and the backend decides
+    which type adapters are installed -- a PostgreSQL URL registers the
+    geometric, citext, xml, and NumPy adapters before anything is reflected, so
+    reflection picks them up on its own.
+
+    PostgreSQL requires the psycopg v3 driver: a bare ``postgresql://`` URL is
+    rejected because SQLAlchemy silently resolves it to the deprecated psycopg2.
+
+``MetadataCache``
+    Optional, off by default, and experimental. Pickles reflected metadata to
+    disk so startup can skip re-reflecting. Read the caveats in the README
+    before turning it on -- staleness detection is coarse, and on SQLite there
+    is none at all.
+
+``session_scope``
+    A context manager giving a transactional block: commit on success, roll
+    back and re-raise on any exception, close either way.
+
+One module-level side effect: a SQLAlchemy pool ``connect`` listener clears the
+PostgreSQL ``search_path`` on every new connection, so a table name must be
+schema-qualified to resolve. That is deliberate -- an unqualified name then
+resolves to nothing rather than silently reflecting the wrong table.
+"""
 
 import os
 import pickle

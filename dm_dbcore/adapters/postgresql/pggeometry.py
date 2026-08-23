@@ -1,24 +1,34 @@
 #!/usr/bin/env python
-
-__author__ = "Demitri Muna"
-
 '''
-Classes to add support for PostrgeSQL geometric data types that SQLAlchemy doesn't natively support.
+PostgreSQL geometric types (POINT, CIRCLE, POLYGON) for SQLAlchemy.
 
-USAGE:
+SQLAlchemy has no native support for these, so each is both a SQLAlchemy
+column type and the Python value read out of that column:
 
-* PGPoint and PGPolygon are to be used to map columns in the database of those types.
+    PGPoint((1.5, 2.5))         .x  .y
+    PGCircle((3.0, 4.0), 5.0)   .x  .y  .radius
+    PGPolygon(ndarray)          .points   -- shape (n, 2), requires NumPy
 
------------------------------------------
+Nothing needs registering by hand. ``DatabaseConnection`` installs these into
+``sqlalchemy.dialects.postgresql.base.ischema_names`` as soon as it sees a
+PostgreSQL URL, so a reflected POINT column comes back as a PGPoint with
+nothing declared in Python. To override that -- for instance to get `cornish`
+objects from ``ast_pg_geometry`` instead -- reassign ``ischema_names`` BEFORE
+your model classes are imported, since reflection reads it at import time:
 
-Example usage, e.g. at the top of a ModelClasses file:
+    from sqlalchemy.dialects.postgresql import base as pg
+    from dm_dbcore.adapters import PGPoint, PGPolygon
+    pg.ischema_names['point'] = PGPoint
+    pg.ischema_names['polygon'] = PGPolygon
 
-from sqlalchemy.dialects.postgresql import base as pg
-from dm_dbcore.adapters import PGPoint, PGPolygon
-pg.ischema_names['point'] = PGPoint
-pg.ischema_names['polygon'] = PGPolygon
+Values round-trip: one read from the database can be assigned straight back to
+a geometric column, and new ones built in Python can be inserted directly. The
+write direction goes through the psycopg dumpers registered at the bottom of
+this file, which is a module import side effect -- if this module is never
+imported, binding one of these values raises "cannot adapt type".
 
-This will assign the PGPoint/PGPolygon object types for all fields of those types.
+NumPy and psycopg are both optional. Their absence is handled; a wrong name in
+this file is not, and fails loudly.
 
 For illustrative purposes in the comments below, assume a column defined as:
 CREATE TABLE some_table (
@@ -26,6 +36,9 @@ CREATE TABLE some_table (
 	pg POLYGON
 );
 '''
+
+__author__ = "Demitri Muna"
+
 import ast  # Abstract Syntax Trees / https://docs.python.org/3.7/library/ast.html
 from typing import Iterable
 
