@@ -33,6 +33,7 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
     keywords="sqlalchemy, database, postgresql, mysql, sqlite, orm",
     packages=find_packages(),
@@ -44,7 +45,8 @@ setup(
         "postgresql": ["psycopg[binary]>=3.0"],
         "mysql": ["pymysql>=1.0.0"],
         "numpy": ["numpy>=1.20.0"],
-        "dev": ["pytest>=7.0", "black", "flake8"],
+        "astronomy": ["numpy>=1.20.0", "cornish"],
+        "dev": ["pytest>=7.0", "pytest-cov>=4.0", "coverage[toml]>=7.0", "black", "flake8"],
     },
     project_urls={
         "Bug Reports": "https://github.com/demitri/dm-dbcore/issues",

@@ -25,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "sqlalchemy>=2.0.0",
@@ -35,7 +36,7 @@ postgresql = ["psycopg[binary]>=3.0"]
 mysql = ["pymysql>=1.0.0"]
 numpy = ["numpy>=1.20.0"]
 astronomy = ["numpy>=1.20.0", "cornish"]
-dev = ["pytest>=7.0", "black", "flake8"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "coverage[toml]>=7.0", "black", "flake8"]
 
 [project.urls]
 Homepage = "https://github.com/demitri/dm-dbcore"
@@ -49,4 +50,44 @@ packages = [
     "dm_dbcore.adapters.postgresql",
     "dm_dbcore.adapters.sqlite",
     "dm_dbcore.mysql",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+# Only tests/. scripts/ holds `test_dm_dbcore.py`, which is a live-database
+# demo, not a pytest suite -- collecting it would be misleading either way.
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "postgresql: needs a live PostgreSQL server; set DM_DBCORE_TEST_PG_URL to run",
+]
+
+[tool.coverage.run]
+source = ["dm_dbcore"]
+branch = true
+# Store repo-relative paths. Coverage data produced in a CI checkout is then
+# readable outside it, which the badge step needs.
+relative_files = true
+# No `omit`. dm_dbcore/adapters/postgresql/numpy_postgresql_psycopg2.py is a
+# reference copy of the pre-psycopg3 adapter that nothing imports, so it scores
+# zero and drags the total down by roughly seven points. TODO.md says to keep
+# the file deliberately, so the honest thing is to keep the number it produces
+# too: omitting it would hide unexercised code behind a healthier figure.
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# No fail_under. A threshold nobody has measured is a guess, and a guessed
+# ratchet either blocks honest work or passes vacuously. Set one from a real
+# baseline once CI has reported a few runs.
+exclude_also = [
+    # Guards for optional dependencies (numpy, psycopg, cornish). Whichever
+    # branch this environment does not take cannot be covered here; the other
+    # environment covers it. The CI matrix installs the extras, so the
+    # available-path branches are the ones measured.
+    "if not _NUMPY_AVAILABLE:",
+    "except ImportError:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
 ]
