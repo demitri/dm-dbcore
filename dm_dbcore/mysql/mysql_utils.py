@@ -124,7 +124,15 @@ def _load_my_cnf_parser(mycnf_path: str) -> Optional[ConfigParser]:
     # naming a line number, and reading a password from it was impossible. Such
     # a flag parses to a None value here, and every read below tests the value
     # for truth, so a valueless key is never mistaken for a setting.
-    parser = ConfigParser(allow_no_value=True)
+    # interpolation=None: ConfigParser's default BasicInterpolation treats `%`
+    # as an escape character, but MySQL option-file values are literal. With the
+    # default, a password containing a percent sign was either an outright crash
+    # (`pa%ss` -> InterpolationSyntaxError, reported nowhere near the real
+    # cause) or -- worse -- silently corrupted: `100%%safe` was handed back as
+    # `100%safe`, and the resulting "Access denied" gave no hint that the file
+    # had been read and then altered. Disabling interpolation returns every
+    # value exactly as written in the file.
+    parser = ConfigParser(allow_no_value=True, interpolation=None)
     parser.optionxform = str  # preserve case
 
     # No try/except around the read. A file that exists but cannot be read is

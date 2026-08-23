@@ -498,12 +498,22 @@ class DatabaseConnection(object):
 
 		if not cls in cls._singletons:
 			assert database_connection_string is not None, "A database connection string must be specified!"
-			cls._singletons[cls] = object.__new__(cls)
 
 			# ------------------------------------------------
 			# This is the custom initialization
 			# ------------------------------------------------
-			me = cls._singletons[cls] # just for convenience (think "self")
+			# The instance is built into a local and registered in _singletons
+			# only after initialization has fully succeeded. It used to be
+			# registered on the line that created it, before the connection was
+			# validated and the schema reflected -- so a failure anywhere below
+			# (an unreachable server, bad credentials, a reflection error) left
+			# a half-built object permanently installed as *the* singleton. The
+			# caller saw the real exception once, then every later call --
+			# including one with a perfectly good connection string -- got that
+			# wreck back with no `metadata` and no `Session`, failing later and
+			# somewhere else with an AttributeError. Failed construction now
+			# leaves no trace and the next attempt starts clean.
+			me = object.__new__(cls) # just for convenience (think "self")
 
 			me.database_connection_string = database_connection_string
 
@@ -535,38 +545,51 @@ class DatabaseConnection(object):
 
 			me.engine = create_engine(me.database_connection_string, **engine_kwargs)
 
-			# Validate the connection before proceeding
-			# This provides clear error messages for common issues
 			try:
-				DatabaseConnection.validate_connection(me.engine, me.database_type)
-			except RuntimeError as e:
-				# Re-raise with additional context about where this failed
-				raise RuntimeError(
-					f"Failed to establish database connection during DatabaseConnection initialization.\n{e}"
-				) from e
+				# Validate the connection before proceeding
+				# This provides clear error messages for common issues
+				try:
+					DatabaseConnection.validate_connection(me.engine, me.database_type)
+				except RuntimeError as e:
+					# Re-raise with additional context about where this failed
+					raise RuntimeError(
+						f"Failed to establish database connection during DatabaseConnection initialization.\n{e}"
+					) from e
 
-			me.metadata = None
-			me.metadataCache = None
+				me.metadata = None
+				me.metadataCache = None
 
-			# Load pickle'd metadata or create it from the database.
-			if cache_name:
-				me.metadataCache = MetadataCache(dbc=me, filename=cache_name)
-				me.metadataCache.read()
-				if me.metadataCache.metadata is not None:
-					me.metadata = me.metadataCache.metadata
+				# Load pickle'd metadata or create it from the database.
+				if cache_name:
+					me.metadataCache = MetadataCache(dbc=me, filename=cache_name)
+					me.metadataCache.read()
+					if me.metadataCache.metadata is not None:
+						me.metadata = me.metadataCache.metadata
 
-			if me.metadata is None:
-				# Not cached (or the cache was stale): reflect from the database.
-				me.metadata = MetaData()
-				me.metadata.reflect(bind=me.engine) # optionally can reflect specific tables
+				if me.metadata is None:
+					# Not cached (or the cache was stale): reflect from the database.
+					me.metadata = MetaData()
+					me.metadata.reflect(bind=me.engine) # optionally can reflect specific tables
 
-				# Persist it. Without this the cache was never written, so
-				# `cache_name` bought nothing: every startup re-reflected and
-				# read() found nothing to load.
-				if me.metadataCache is not None:
-					me.metadataCache.write(me.metadata)
+					# Persist it. Without this the cache was never written, so
+					# `cache_name` bought nothing: every startup re-reflected and
+					# read() found nothing to load.
+					if me.metadataCache is not None:
+						me.metadataCache.write(me.metadata)
 
-			me.Session = scoped_session(sessionmaker(me.engine))
+				me.Session = scoped_session(sessionmaker(me.engine))
+			except BaseException:
+				# Nothing is suppressed here. The engine created above owns a
+				# connection pool that a failed construction would otherwise
+				# leak, so it is disposed and the original exception re-raised
+				# unchanged -- the caller sees exactly what went wrong.
+				me.engine.dispose()
+				raise
+
+			# Registered only now that initialization has fully succeeded and
+			# every attribute the class promises is in place. See the note at
+			# the top of this block.
+			cls._singletons[cls] = me
 
 			# ------------------------------------------------
 

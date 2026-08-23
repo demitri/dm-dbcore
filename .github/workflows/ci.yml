@@ -97,6 +97,50 @@ jobs:
         # reason, and the `postgresql` job below runs them for real.
         run: python -m pytest --ignore=tests/test_check_style.py --cov --cov-report=term-missing
 
+  minimal-install:
+    name: Tests with no optional dependencies
+    runs-on: ubuntu-latest
+
+    # Every job above installs the postgresql and numpy extras, so the absence
+    # paths were never actually run: dm_dbcore/adapters/ is full of
+    # `except ImportError` guards that exist precisely so the package imports
+    # and works without NumPy or psycopg, and CI could not tell whether a single
+    # one of them still held. A guard nobody exercises is a guess. This job
+    # installs the base package plus test tooling only.
+    #
+    # The optional-dependency tests skip themselves here via
+    # pytest.importorskip; what is being proven is that importing dm_dbcore and
+    # running everything else still works with those packages absent.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (no extras beyond the test tooling)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Confirm the optional dependencies really are absent
+        # Without this the job silently degrades into a duplicate of `test` the
+        # day something adds numpy to the dev extra.
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          present = [n for n in ("numpy", "psycopg", "psycopg2") if importlib.util.find_spec(n)]
+          if present:
+              sys.exit(f"optional dependencies unexpectedly installed: {present}")
+          print("numpy, psycopg and psycopg2 are all absent, as this job requires")
+          PY
+
+      - name: Import the package with nothing optional installed
+        run: python -c "import dm_dbcore; print(dm_dbcore.__name__, 'imports clean')"
+
+      - name: Run tests
+        run: python -m pytest --ignore=tests/test_check_style.py
+
   postgresql:
     name: Tests with a live PostgreSQL server
     runs-on: ubuntu-latest
@@ -178,9 +222,11 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     # The only job with a write token, and it runs no tests and no service
     # container -- it consumes the coverage data the previous job measured.
+    # `contents: write` only: this job is gated to push-on-main, where there is
+    # no pull request to comment on. `pull-requests: write` was granted and
+    # never used.
     permissions:
       contents: write
-      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
@@ -195,6 +241,10 @@ jobs:
       # created by the first run on main -- until then the badge URL 404s and
       # shields renders "invalid".
       - name: Publish badge data
-        uses: py-cov-action/python-coverage-comment-action@v3
+        # Pinned to a commit SHA, not the mutable `v3` tag: this is the one job
+        # holding a write token, and a tag can be repointed at any commit by
+        # anyone who can push to that third-party repo. SHA = v3 as of
+        # 2026-08-24; bump deliberately, after reading the diff.
+        uses: py-cov-action/python-coverage-comment-action@50d15ff8768f6d897b04e5a0805bd1a98f7096c4 # v3
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

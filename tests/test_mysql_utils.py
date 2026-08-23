@@ -204,3 +204,37 @@ def test_options_skip_sections_with_nothing_usable(write_cnf):
         "user": "bob",
         "host": "db.example.org",
     }
+
+
+# --------------------------------------------------------------------------
+# Percent signs
+#
+# MySQL option-file values are literal, but ConfigParser's default
+# BasicInterpolation reads `%` as an escape. That default made a percent sign
+# in a password either a crash or, worse, a silent rewrite -- so both shapes
+# are pinned here.
+# --------------------------------------------------------------------------
+
+def test_password_with_a_single_percent_is_read_literally(write_cnf):
+    """`pa%ss` used to raise InterpolationSyntaxError instead of parsing."""
+    path = write_cnf("[client]\nuser=alice\npassword=pa%ss\n")
+    assert read_password_from_my_cnf(mycnf_path=path) == "pa%ss"
+
+
+def test_password_with_a_doubled_percent_is_not_collapsed(write_cnf):
+    """`100%%safe` must come back as written, not silently shortened."""
+    path = write_cnf("[client]\nuser=alice\npassword=100%%safe\n")
+    assert read_password_from_my_cnf(mycnf_path=path) == "100%%safe"
+
+
+def test_percent_paren_password_is_not_treated_as_a_reference(write_cnf):
+    """The interpolation syntax proper: `%(user)s` is a password, not a lookup."""
+    path = write_cnf("[client]\nuser=alice\npassword=%(user)s\n")
+    assert read_password_from_my_cnf(mycnf_path=path) == "%(user)s"
+
+
+def test_options_reader_also_reads_percents_literally(write_cnf):
+    path = write_cnf("[client]\nuser=alice\npassword=pa%ss\ndatabase=db%%1\n")
+    options = read_connection_options_from_my_cnf(mycnf_path=path)
+    assert options["password"] == "pa%ss"
+    assert options["database"] == "db%%1"

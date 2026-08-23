@@ -295,3 +295,41 @@ def test_write_failure_propagates(sqlite_db, tmp_path):
 
     with pytest.raises(OSError):
         cache.write(sqlite_db.metadata)
+
+
+# --------------------------------------------------------------------------
+# Failed construction must leave no singleton behind
+#
+# The instance used to be registered in `_singletons` before the connection was
+# validated or the schema reflected, so any failure below that point installed
+# a half-built object permanently. The caller saw the real error once; every
+# later call got the wreck back and failed elsewhere with an AttributeError.
+# --------------------------------------------------------------------------
+
+def test_failed_construction_leaves_no_singleton(reset_singleton, tmp_path):
+    bad_url = f"sqlite:///{tmp_path / 'no-such-directory' / 'test.db'}"
+
+    with pytest.raises(RuntimeError):
+        DatabaseConnection(database_connection_string=bad_url)
+
+    assert DatabaseConnection not in DatabaseConnection._singletons, (
+        "a construction that raised must not register a half-built instance"
+    )
+
+
+def test_a_good_connection_works_after_a_failed_one(reset_singleton, tmp_path, sqlite_url):
+    """The retry that the poisoned singleton used to make impossible."""
+    bad_url = f"sqlite:///{tmp_path / 'no-such-directory' / 'test.db'}"
+
+    with pytest.raises(RuntimeError):
+        DatabaseConnection(database_connection_string=bad_url)
+
+    db = DatabaseConnection(database_connection_string=sqlite_url)
+
+    assert db.database_connection_string == sqlite_url
+    assert db.metadata is not None, "the retry must be fully built, not the failed instance"
+    assert db.Session is not None
+
+    # And it is genuinely usable, not merely populated.
+    with db.engine.connect() as conn:
+        assert conn.execute(text("SELECT 1")).fetchone()[0] == 1

@@ -18,10 +18,29 @@ The tests here are split by what they need to run:
 """
 
 import os
+import sys
 
 import pytest
 
 from dm_dbcore import DatabaseConnection
+
+
+# tests/test_check_style.py exercises scripts/check_style.py, which inspects
+# `match`-statement AST nodes (ast.MatchAs, ast.MatchStar, ast.MatchMapping).
+# Those classes arrived in Python 3.10, but the package itself supports 3.8+,
+# so on 3.8/3.9 that module cannot even be collected -- and the plain
+# `python -m pytest` the README documents therefore failed outright for anyone
+# developing on a supported interpreter. CI sidesteps this with an explicit
+# --ignore; this makes the same decision for local runs.
+#
+# This is a deliberate, visible skip of a test whose *tool* needs a newer
+# interpreter, not of a test that fails: the gate is a development tool and
+# CLAUDE.md already records that 3.10+ is a limit on the tool, not the package.
+# It runs for real on every interpreter that can load it, and CI's style-gate
+# job runs it on 3.12 unconditionally.
+collect_ignore = []
+if sys.version_info < (3, 10):
+    collect_ignore.append("test_check_style.py")
 
 
 @pytest.fixture
