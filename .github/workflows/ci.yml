@@ -1,0 +1,200 @@
+name: CI
+
+# Three jobs, because the suite has three different requirements:
+#
+#   style-gate  The STYLE_GUIDE gate and its own tests. Pinned to one modern
+#               Python -- see the note on that job.
+#   test        The package's tests, across every Python the package claims to
+#               support. No database beyond SQLite, which ships with Python.
+#   postgresql  The same tests plus the ones that need a live server, against a
+#               PostgreSQL service container. This is the only job that proves
+#               the geometric and NumPy adapters actually round-trip, and it
+#               produces the coverage data the badge reads.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  style-gate:
+    name: Style gate (STYLE_GUIDE.md)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to 3.12 rather than run across the matrix, and the reason is not
+      # convenience: scripts/check_style.py inspects ast.MatchAs / ast.MatchStar
+      # / ast.MatchMapping, which do not exist before Python 3.10, and its test
+      # fixtures contain `match` statements that are a SyntaxError before 3.10.
+      #
+      # That is a constraint on the DEVELOPER TOOL, not on the package. The gate
+      # lives in scripts/ and is not part of the distribution (see
+      # [tool.setuptools] packages in pyproject.toml), so it does not narrow
+      # what dm-dbcore itself supports -- the `test` job below covers that.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run the gate over the package, templates and examples
+        # examples/ is included deliberately: an example that violates the
+        # style guide teaches the violation.
+        run: python scripts/check_style.py templates/ dm_dbcore/ examples/
+
+      - name: Test the gate itself
+        run: python -m pytest tests/test_check_style.py -v
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every version the package declares in pyproject.toml, plus 3.13.
+        # 3.8 and 3.9 are pinned to ubuntu-22.04: actions/setup-python has no
+        # builds of them for ubuntu-24.04, which is what ubuntu-latest now is.
+        include:
+          - { python-version: "3.8", os: ubuntu-22.04 }
+          - { python-version: "3.9", os: ubuntu-22.04 }
+          - { python-version: "3.10", os: ubuntu-latest }
+          - { python-version: "3.11", os: ubuntu-latest }
+          - { python-version: "3.12", os: ubuntu-latest }
+          - { python-version: "3.13", os: ubuntu-latest }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        # The astronomy extra is deliberately not installed: cornish pulls in
+        # starlink-ast, and nothing here needs it. dm_dbcore.adapters.postgresql
+        # .ast_pg_geometry is written to import without it, and a test asserts
+        # exactly that.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[postgresql,numpy,dev]"
+
+      - name: Run tests
+        # tests/test_check_style.py is excluded here and runs in its own job:
+        # it needs Python 3.10+ for `match` statement fixtures. Nothing else is
+        # skipped -- the PostgreSQL tests report themselves as skipped with a
+        # reason, and the `postgresql` job below runs them for real.
+        run: python -m pytest --ignore=tests/test_check_style.py --cov --cov-report=term-missing
+
+  postgresql:
+    name: Tests with a live PostgreSQL server
+    runs-on: ubuntu-latest
+
+    # The adapters this package exists for -- POINT, CIRCLE, POLYGON, citext,
+    # xml, NumPy arrays -- can only be proven against a real server. A dumper
+    # that was never registered looks fine until an INSERT raises "cannot adapt
+    # type", which is precisely the bug this repo shipped once.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dmdbcore
+          POSTGRES_PASSWORD: dmdbcore
+          POSTGRES_DB: dmdbcore_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[postgresql,numpy,dev]"
+
+      - name: Run the full suite against PostgreSQL
+        env:
+          # psycopg v3 explicitly. A bare postgresql:// URL is rejected by
+          # DatabaseConnection because SQLAlchemy resolves it to psycopg2.
+          DM_DBCORE_TEST_PG_URL: postgresql+psycopg://dmdbcore:dmdbcore@localhost:5432/dmdbcore_test
+        run: |
+          python -m pytest --ignore=tests/test_check_style.py \
+            --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Confirm the PostgreSQL tests were not skipped
+        # Without this the job would pass just as happily if every PostgreSQL
+        # test had skipped for want of a server -- a green tick certifying that
+        # nothing was tested. The check looks for the conftest skip reason
+        # specifically, so an unrelated skip (citext missing, say) still shows
+        # up in the report without failing the build for the wrong reason.
+        env:
+          DM_DBCORE_TEST_PG_URL: postgresql+psycopg://dmdbcore:dmdbcore@localhost:5432/dmdbcore_test
+        run: |
+          python -m pytest -m postgresql -rs --no-header | tee /tmp/pg-result.txt
+          if grep -q "no PostgreSQL server" /tmp/pg-result.txt; then
+            echo "::error::PostgreSQL tests skipped despite a service container being up."
+            exit 1
+          fi
+
+      - name: Upload coverage data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data
+          # include-hidden-files is required: .coverage is a dotfile, and
+          # upload-artifact v4 silently drops those by default.
+          include-hidden-files: true
+          path: |
+            .coverage
+            coverage.xml
+          if-no-files-found: warn
+
+  coverage-badge:
+    name: Coverage badge
+    needs: postgresql
+    runs-on: ubuntu-latest
+    # Publish only from the default branch. On a pull request there is nothing
+    # to publish to, and the token is read-only by design.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # The only job with a write token, and it runs no tests and no service
+    # container -- it consumes the coverage data the previous job measured.
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the measured coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-data
+
+      # Writes an endpoint JSON to the `python-coverage-comment-action-data`
+      # branch, which the shields.io badge in README.md reads. That branch is
+      # created by the first run on main -- until then the badge URL 404s and
+      # shields renders "invalid".
+      - name: Publish badge data
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
