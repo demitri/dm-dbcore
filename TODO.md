@@ -283,3 +283,6 @@ extra that `pyproject.toml` has. Added, but the next drift is a matter of time.
 - [ ] `pyproject.toml` is sufficient on its own with a modern setuptools.
       Reduce `setup.py` to nothing (or delete it) rather than maintaining the
       same facts twice.
+
+- [ ] `DatabaseConnection.py:518` uses `assert` for the None-connection-string guard — stripped under `python -O`, leaving an unrelated AttributeError; replace with an explicit raise. (sonnet round 3, 2026-08-24; pre-existing)
+- [ ] Singleton: log at debug level when a losing concurrent caller passed a different `database_connection_string` than the registered winner's — the first-caller-wins contract is documented but now officially exercised concurrently. (sonnet round 3, 2026-08-24)

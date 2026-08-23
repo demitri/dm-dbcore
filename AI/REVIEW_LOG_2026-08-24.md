@@ -224,3 +224,18 @@ block, which is what brought it into scope.
 - Suite grew 204 → 212 with all extras present; 10 new tests total across the
   two fix commits (6 in f295ca6, 4 in 400b5aa), minus counting effects from the
   one test that was split.
+
+## Round 3 (sonnet, 2026-08-24 morning) — DRY
+
+Independent review of d65eaf7..HEAD with particular attention to 400b5aa
+(the previously unreviewed fix commit). Verified by execution, not
+reading: full suite 212/18, numpy/psycopg-free venv 130/12/0, style gate
+0/20, concurrency test 5x in isolation. Verdict: 400b5aa is sound
+(textbook double-checked locking, registration only after success,
+dispose-on-failure inside the lock; numpy markers match the library
+paths). NO new defects — the cycle the cap left open is now closed dry.
+
+Two low, non-blocking notes recorded in TODO.md: the pre-existing
+`assert database_connection_string is not None` (stripped under -O), and
+a debug log when a losing concurrent caller's connection string differs
+from the registered singleton's.
