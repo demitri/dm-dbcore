@@ -165,3 +165,98 @@ point and circle round-trips passed while polygon was broken.
 
 Kept deliberately as a reference copy of the psycopg2-era adapter. Not imported
 by the package's normal path. Leave it alone.
+
+---
+
+# Found while adding CI, tests and coverage (2026-08-23)
+
+## ~~`~/.my.cnf` valueless options crashed the parser~~ — FIXED 2026-08-23
+
+`_load_my_cnf_parser()` built a default `ConfigParser()`, which rejects options
+written without `=value`. Real MySQL option files are full of them —
+`no-auto-rehash`, `quick`, `skip-ssl` — so an ordinary `~/.my.cnf` raised
+`configparser.ParsingError` naming a line number, and reading a password from it
+was impossible. Now `ConfigParser(allow_no_value=True)`; such a key parses to a
+`None` value, and every read tests the value for truth, so a valueless key is
+never mistaken for a setting. Covered by
+`tests/test_mysql_utils.py::test_valueless_options_are_tolerated`.
+
+This is a prerequisite for "Make `~/.my.cnf` just work" above: that plan has
+dm-dbcore reading the file automatically, which would have hit this on the
+first real config file it met.
+
+## MetadataCache's default cache directory is bound at import time
+
+```python
+def __init__(self, dbc=None, filename=None,
+             path=os.path.join(os.path.expanduser("~"), ".sqlalchemy_cache")):
+```
+
+The default is a *default argument*, so `$HOME` is expanded once when the module
+is imported, not when the cache is used.
+
+- [ ] Two consequences. Changing `$HOME` afterwards has no effect, which is why
+      no test exercises `DatabaseConnection(cache_name=...)` end to end — it
+      would write into the developer's real `~/.sqlalchemy_cache`. And a process
+      that legitimately relocates `$HOME` (containers, CI, a service account)
+      silently keeps the old path.
+- [ ] Fix shape: `path=None` in the signature, resolve inside `__init__`. Then
+      the caching path becomes testable, and the `cache_name` integration gap
+      noted in the coverage section below closes with it.
+
+## `sql_string` means two different things
+
+`PGPoint.sql_string` and `PGCircle.sql_string` return bare literals
+(`POINT(1.5,2.5)`, `<(3.0,4.0),5.0>`). `PGPolygon.sql_string` returns quoted SQL
+with a cast: `'((1, 2), (3, 4))'::POLYGON`. It also renders through `str()` on a
+list, so it carries spaces the other two do not.
+
+- [ ] Decide which one the property means and make all three agree. The polygon
+      form is the odd one out and is the shape that caused the `bind_processor`
+      bug fixed on 2026-07-16 — the same confusion between *data* and *SQL*,
+      surviving in a second place. `_polygon_literal()` already produces the
+      data form; `sql_string` should probably use it.
+- [ ] Nothing in the package calls `sql_string`. It is public API for callers
+      hand-writing SQL, which is why the inconsistency has gone unnoticed.
+
+## The style gate needs Python 3.10, the package claims 3.8
+
+`scripts/check_style.py` inspects `ast.MatchAs` / `ast.MatchStar` /
+`ast.MatchMapping`, which do not exist before 3.10, and `tests/test_check_style.py`
+has fixtures containing `match` statements, which are a SyntaxError before 3.10.
+
+This is not a limit on the distribution: the gate lives in `scripts/` and is not
+in `[tool.setuptools] packages`. `dm_dbcore/` itself contains no 3.10-only
+syntax. CI reflects this — the gate runs in its own job on 3.12, and the package
+is tested on 3.8 through 3.13.
+
+- [ ] Optional: make the gate degrade explicitly on <3.10 (`getattr(ast, "MatchAs", ())`)
+      if it ever needs to run on an older interpreter. Do not do this silently —
+      a gate that quietly checks less is worse than one that refuses to start.
+
+## Coverage baseline and where the gaps are
+
+First measured baseline, offline (no PostgreSQL): **71%** overall, 203 tests.
+The gaps are known, not mysterious:
+
+- `numpy_postgresql_psycopg2.py` — 0%, 51 statements. The deliberate reference
+  copy (see above). Costs about seven points of the total; deliberately not
+  excluded from the report, so the figure stays honest.
+- `DatabaseConnection.py` — 55% offline. The uncovered regions are the
+  PostgreSQL and MySQL schema-hash and staleness paths, the adapter-loading
+  branches, and `validate_connection`'s per-error-class messages. The CI
+  PostgreSQL job covers most of the first two; the MySQL paths stay uncovered
+  until "MySQL is unverified end-to-end" above is done.
+- `ast_pg_geometry.py` — 25%. Needs both `cornish` and a live server.
+- No `fail_under` is set. A threshold nobody has measured is a guess. Set one
+  from a real baseline once CI has reported a few runs on `main`.
+
+## Two sources of packaging truth
+
+`setup.py` and `pyproject.toml` both declare name, version, classifiers and
+extras, and they had already drifted: `setup.py` was missing the `astronomy`
+extra that `pyproject.toml` has. Added, but the next drift is a matter of time.
+
+- [ ] `pyproject.toml` is sufficient on its own with a modern setuptools.
+      Reduce `setup.py` to nothing (or delete it) rather than maintaining the
+      same facts twice.
