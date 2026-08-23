@@ -7,9 +7,14 @@ Its mechanically-decidable rules are enforced by a gate. Run it after any change
 to model classes, connection modules, or the templates:
 
 ```bash
-python scripts/check_style.py templates/ dm_dbcore/     # this repo
-python scripts/check_style.py path/to/project/db/        # a downstream project
+python scripts/check_style.py templates/ dm_dbcore/ examples/   # this repo
+python scripts/check_style.py path/to/project/db/               # a downstream project
 ```
+
+CI runs exactly that first command (`.github/workflows/ci.yml`, job
+`style-gate`), on Python 3.12 — the gate itself needs 3.10+ because it inspects
+`match`-statement AST nodes. That is a limit on the tool, not on the package;
+the `test` job covers Python 3.8 through 3.13.
 
 Exit status is non-zero on violation. It catches: legacy `declarative_base()` /
 `registry()` / `@mapper_registry.mapped`, `__tablename__` + `autoload`, manually

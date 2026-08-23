@@ -1,5 +1,10 @@
 # dm-dbcore
 
+[![CI](https://github.com/demitri/dm-dbcore/actions/workflows/ci.yml/badge.svg)](https://github.com/demitri/dm-dbcore/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/demitri/dm-dbcore/python-coverage-comment-action-data/endpoint.json)](https://github.com/demitri/dm-dbcore/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.8%20%7C%203.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+
 A SQLAlchemy database connection wrapper with metadata caching, multi-database support (PostgreSQL, MySQL, SQLite), and custom type adapters.
 
 ## Features
@@ -49,6 +54,15 @@ pip install -e .
 ```
 
 ## Quick Start
+
+A complete, runnable program is in [`examples/quickstart.py`](examples/quickstart.py).
+It uses SQLite in a temporary directory, so it needs no server and no
+configuration, and it is executed by the test suite — if it stops working, CI
+says so:
+
+```bash
+python examples/quickstart.py
+```
 
 ### Basic Usage
 
@@ -190,19 +204,40 @@ with my_session() as session:
     pass
 ```
 
-### NumPy Array Support (PostgreSQL/SQLite)
+### NumPy Support (PostgreSQL/SQLite)
 
-When you install with NumPy support, you can store/retrieve NumPy arrays:
+Installing with NumPy support lets you pass NumPy values straight to the
+database. `DatabaseConnection` loads the adapters when it sees the URL, so
+there is nothing to register:
 
 ```python
 from dm_dbcore import DatabaseConnection
 import numpy as np
+from sqlalchemy import text
 
 db = DatabaseConnection('postgresql+psycopg://localhost/mydb')
-# NumPy adapters are automatically loaded for PostgreSQL
 
-# Arrays are automatically converted to/from database format
+with db.engine.begin() as connection:
+    connection.execute(
+        text("INSERT INTO measurements (value, spectrum) VALUES (:v, :s)"),
+        {"v": np.float64(1.5), "s": np.array([1.0, 2.5, 3.0])},
+    )
 ```
+
+**This is the write direction only.** The adapters registered here are psycopg
+*dumpers*: they turn NumPy scalars and `ndarray`s into the literals PostgreSQL
+expects (including `NaN`, `Infinity` and `-Infinity`, which `str()` gets
+wrong). No loaders are registered, so reading a PostgreSQL array column back
+gives you an ordinary Python `list`, not an `ndarray` — wrap it in
+`np.array()` yourself if you need one.
+
+**SQLite is narrower still:** the SQLite adapters convert NumPy *scalars*
+(`np.int32`, `np.float64`, and so on) to the Python `int`/`float` that the
+`sqlite3` module accepts. SQLite has no array type and this package adds no
+array support for it.
+
+The one array type that does round-trip in both directions is
+`PGPolygon.points` — see below.
 
 ### MySQL Utilities
 
@@ -278,7 +313,8 @@ dm_dbcore/
 ├── adapters/             # Custom type adapters
 │   ├── postgresql/       # PostgreSQL adapters
 │   │   ├── PGPoint       # PostgreSQL Point type
-│   │   ├── PGPolygon     # PostgreSQL Polygon type
+│   │   ├── PGPolygon     # PostgreSQL Polygon type (points are a NumPy ndarray)
+│   │   ├── PGCircle      # PostgreSQL Circle type
 │   │   ├── PGASTCircle   # Astronomy Circle (requires cornish)
 │   │   ├── PGASTPolygon  # Astronomy Polygon (requires cornish)
 │   │   ├── PGCIText      # PostgreSQL citext type
@@ -299,7 +335,8 @@ from dm_dbcore import DatabaseConnection, session_scope
 from dm_dbcore import DBTYPE_POSTGRESQL, DBTYPE_MYSQL, DBTYPE_SQLITE
 
 # PostgreSQL geometric types
-from dm_dbcore.adapters import PGPoint, PGPolygon
+from dm_dbcore.adapters import PGPoint, PGPolygon, PGCircle
+from dm_dbcore.adapters import PGCIText, PGXML
 
 # Astronomy types (requires cornish)
 from dm_dbcore.adapters import PGASTCircle, PGASTPolygon
@@ -324,8 +361,22 @@ Singleton class for managing database connections.
 **Attributes:**
 - `engine`: SQLAlchemy Engine object
 - `Session`: SQLAlchemy Session factory (scoped)
-- `metadata`: SQLAlchemy MetaData object
+- `metadata`: SQLAlchemy MetaData object, reflected on construction
 - `database_type`: One of `DBTYPE_POSTGRESQL`, `DBTYPE_MYSQL`, `DBTYPE_SQLITE`
+- `database_connection_string`: the URL this connection was built from
+
+**Raises:**
+- `AssertionError` if no connection string is given and no instance exists yet
+- `ValueError` if the URL names no recognised backend — including a bare
+  `postgresql://` or an explicit `postgresql+psycopg2://`, both of which are
+  rejected rather than quietly resolved to the deprecated psycopg2 driver
+- `RuntimeError` if the database cannot be reached; construction fails rather
+  than handing back a half-built object
+
+**Singleton caveat:** the *first* caller's URL wins for the lifetime of the
+process. A later `DatabaseConnection('some://other/url')` does not open a
+second database and does not raise — it returns the existing connection and
+ignores the argument.
 
 ### session_scope
 
@@ -345,38 +396,87 @@ with session_scope(db) as session:
 
 ### MetadataCache
 
-**`MetadataCache(dbc, filename, path=None)`**
+**`MetadataCache(dbc, filename, path='~/.sqlalchemy_cache')`**
 
-Manages SQLAlchemy metadata caching.
+Manages SQLAlchemy metadata caching. See
+[Metadata Caching](#metadata-caching-experimental) for the caveats — this is
+experimental and off unless you ask for it.
+
+**Parameters:**
+- `dbc`: the `DatabaseConnection` this cache belongs to
+- `filename` (str, **required**): cache filename; omitting it raises
+- `path` (str): directory for the cache, created if absent
 
 **Methods:**
-- `read()`: Load metadata from cache
-- `write(metadata)`: Save metadata to cache
-- `cacheIsStale()`: Check if cache needs refresh
+- `read()`: Load metadata from the cache. A stale cache is *deleted* and
+  `metadata` is left as `None`.
+- `write(metadata)`: Pickle the metadata, and for PostgreSQL/MySQL write the
+  companion `.hash` file staleness detection needs. Failures propagate —
+  caching is opt-in, so silently not doing it would be a lie.
+- `cacheIsStale()`: Compare the stored schema hash against the database.
+  Always `True` on SQLite, which has no staleness detection.
 
 ### MySQL Utilities
 
-**`read_password_from_my_cnf(host=None, user=None, section=None, mycnf_path='~/.my.cnf')`**
+Both functions take **keyword arguments only**.
 
-Read password from MySQL configuration file.
+**`read_password_from_my_cnf(*, host=None, user=None, section=None, mycnf_path='~/.my.cnf')`**
 
-**Parameters:**
-- `host` (str, optional): Hostname to match (case-sensitive)
-- `user` (str, optional): Username to match
-- `section` (str, optional): Option group to check (defaults to 'client')
-- `mycnf_path` (str): Path to .my.cnf file
-
-**Returns:** Password string or None
-
-**`read_connection_options_from_my_cnf(section=None, mycnf_path='~/.my.cnf')`**
-
-Read all connection options from MySQL configuration file.
+Read a password from a MySQL option file.
 
 **Parameters:**
-- `section` (str, optional): Option group to check (defaults to 'client')
-- `mycnf_path` (str): Path to .my.cnf file
+- `host` (str, optional): Hostname to match. `localhost` and `127.0.0.1` are
+  treated as the same host; surrounding whitespace is ignored. A group that
+  names no host matches any host.
+- `user` (str, optional): Username to match (exact)
+- `section` (str, optional): Option group to check. If it does not exist, the
+  search falls back to `client` and then every other group in file order.
+- `mycnf_path` (str): Path to the option file
 
-**Returns:** Dictionary with keys: `host`, `user`, `password`, `database`, `port`
+**Returns:** the password string, or `None` if the file is missing or nothing
+matches. Both the `password` and `passwd` spellings are read.
+
+**`read_connection_options_from_my_cnf(*, section=None, mycnf_path='~/.my.cnf')`**
+
+Read connection options from a MySQL option file, with the same group fallback
+rules.
+
+**Returns:** a dictionary containing **only the keys that were found** — it is
+not a fixed shape, and it is `{}` if the file is missing or has nothing usable.
+Possible keys are `host`, `user`, `password`, `database` (also read from `db`
+or `schema`), and `port`. Every value is a string; `port` is *not* converted to
+an int.
+
+## Development
+
+```bash
+pip install -e ".[postgresql,numpy,dev]"
+
+python -m pytest                                            # the test suite
+python scripts/check_style.py templates/ dm_dbcore/ examples/  # the STYLE_GUIDE gate
+python examples/quickstart.py                               # the usage example
+python -m pytest --cov --cov-report=term-missing            # with coverage
+```
+
+Most of the suite needs nothing but Python: SQLite is built in, and the type
+adapters are checked against the exact text PostgreSQL sends and expects.
+
+The tests that need a live PostgreSQL server are **skipped, not faked**, unless
+you point them at one:
+
+```bash
+export DM_DBCORE_TEST_PG_URL='postgresql+psycopg://user:pass@localhost:5432/testdb'
+python -m pytest -m postgresql
+```
+
+CI runs those against a PostgreSQL service container, which is the only place
+the geometric and NumPy adapters are proven to round-trip. See
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+One constraint worth knowing: `scripts/check_style.py` needs Python 3.10+
+(it inspects `match`-statement AST nodes). That is a limit on the developer
+tool, not on the package — the gate is not part of the distribution, and the
+package itself is tested across every version below.
 
 ## Requirements
 
@@ -396,7 +496,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-MIT License - see LICENSE file for details.
+BSD 3-Clause License - see [LICENSE](LICENSE) file for details.
 
 ## Author
 
