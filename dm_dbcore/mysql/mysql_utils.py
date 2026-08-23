@@ -118,7 +118,13 @@ def _load_my_cnf_parser(mycnf_path: str) -> Optional[ConfigParser]:
     if not config_path.exists():
         return None
 
-    parser = ConfigParser()
+    # allow_no_value: MySQL option files carry bare flags with no `=value` --
+    # `no-auto-rehash`, `quick`, `skip-ssl`. The default ConfigParser rejects
+    # those, so a perfectly ordinary ~/.my.cnf raised configparser.ParsingError
+    # naming a line number, and reading a password from it was impossible. Such
+    # a flag parses to a None value here, and every read below tests the value
+    # for truth, so a valueless key is never mistaken for a setting.
+    parser = ConfigParser(allow_no_value=True)
     parser.optionxform = str  # preserve case
     try:
         with config_path.open() as handle:
