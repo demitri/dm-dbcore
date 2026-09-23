@@ -108,14 +108,18 @@ def _rebound_names(tree: ast.AST) -> set:
         # anything that binds a Name.
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             names.add(node.id)
+        # Parameters, of both `def` and `lambda` -- these are ast.arg, not Name.
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
         # `except SomeError as e` -- a bare identifier, not a Name node.
         elif isinstance(node, ast.ExceptHandler) and node.name:
             names.add(node.name)
-        # `case Foo() as bar:` / `case bar:` -- also bare identifiers.
-        elif isinstance(node, ast.MatchAs) and node.name:
+        # `case Foo() as bar:` / `case bar:` / `case [*rest]` / `case {**rest}`
+        # -- all bare identifiers.
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
             names.add(node.name)
-        elif isinstance(node, ast.MatchStar) and node.name:
-            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.add(node.rest)
         # `def Table(...)` / `class Table:` shadow an import.
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
@@ -149,10 +153,6 @@ class StyleChecker(ast.NodeVisitor):
         # Set by `from sqlalchemy import *`, after which any bare name may be
         # a SQLAlchemy export and we fall back to matching on the name alone.
         self.sa_star = False
-        # Names bound to a SQLAlchemy registry(), e.g. `mapper_registry =
-        # registry()`. Only these make `@x.mapped` a SQLAlchemy decorator --
-        # otherwise an unrelated `@app.mapped` would be flagged.
-        self.sa_registries: set = set()
         # Names this module binds itself, from a pre-pass -- see
         # _rebound_names(). A name in here is never resolved as SQLAlchemy's.
         self.rebound: set = set()
@@ -168,7 +168,9 @@ class StyleChecker(ast.NodeVisitor):
         if not _is_sqlalchemy_module(node.module):
             # Not SQLAlchemy: none of these rules apply. Importing over an
             # existing binding rebinds it, though -- after
-            # `from widgets import Table as T`, T is widgets', not ours.
+            # `from widgets import Table`, Table is widgets', not ours. That
+            # matters even with no prior binding, because a preceding
+            # `from sqlalchemy import *` would otherwise claim the bare name.
             for alias in node.names:
                 if alias.name != "*":
                     self._unbind(alias.asname or alias.name)
@@ -214,60 +216,21 @@ class StyleChecker(ast.NodeVisitor):
                 self.sa_modules[root] = root
         self.generic_visit(node)
 
-    def visit_Assign(self, node: ast.Assign) -> None:
-        # Track `mapper_registry = registry()` so that only a real SQLAlchemy
-        # registry makes `@mapper_registry.mapped` a violation, and drop the
-        # name again if it is later reassigned to something else.
-        is_registry = (
-            isinstance(node.value, ast.Call)
-            and self._resolve_call(node.value) == "registry"
-        )
-        for target in node.targets:
-            for sub in ast.walk(target):
-                if not isinstance(sub, ast.Name):
-                    continue
-                if is_registry:
-                    self.sa_registries.add(sub.id)
-                else:
-                    self.sa_registries.discard(sub.id)
-
-        self.generic_visit(node)
-
     def _unbind(self, name: str) -> None:
-        """Forget a SQLAlchemy binding whose local name has been rebound."""
+        """Forget a SQLAlchemy binding whose local name has been rebound.
+
+        Also records the name as rebound, so that a bare `from sqlalchemy
+        import *` cannot go on claiming it.
+        """
         self.sa_names.pop(name, None)
         self.sa_modules.pop(name, None)
-        self.sa_registries.discard(name)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        # Parameters shadow an import for the body: `def make(Table)`. The
-        # function's own name is handled by the _rebound_names pre-pass.
-        args = node.args
-        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
-            self._unbind(arg.arg)
-        if args.vararg:
-            self._unbind(args.vararg.arg)
-        if args.kwarg:
-            self._unbind(args.kwarg.arg)
-        self.generic_visit(node)
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def _is_sa_mapped_decorator(self, dec: ast.expr) -> bool:
-        """True only for `@<sqlalchemy registry>.mapped`."""
-        return (
-            isinstance(dec, ast.Attribute)
-            and dec.attr == "mapped"
-            and isinstance(dec.value, ast.Name)
-            and dec.value.id in self.sa_registries
-        )
+        self.rebound.add(name)
 
     def _is_model_class(self, node: ast.ClassDef) -> bool:
-        """A model class inherits from Base, or is decorated @<registry>.mapped."""
-        for base in node.bases:
-            if isinstance(base, ast.Name) and base.id == "Base":
-                return True
-        return any(self._is_sa_mapped_decorator(d) for d in node.decorator_list)
+        """A model class inherits from Base (STYLE_GUIDE 2)."""
+        return any(
+            isinstance(base, ast.Name) and base.id == "Base" for base in node.bases
+        )
 
     def _resolve_call(self, node: ast.Call):
         """Return the canonical SQLAlchemy name this call targets, else None.
@@ -353,18 +316,13 @@ class StyleChecker(ast.NodeVisitor):
     # -- classes -------------------------------------------------------------
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        # `class Table: ...` shadows the import from here on.
-        self._unbind(node.name)
-
-        for dec in node.decorator_list:
-            if self._is_sa_mapped_decorator(dec):
-                self.report(
-                    node,
-                    "mapper-registry",
-                    "STYLE_GUIDE 2: `@mapper_registry.mapped` is legacy; "
-                    "inherit from Base instead",
-                )
-
+        # NOTE: there is deliberately no separate `@mapper_registry.mapped`
+        # rule. STYLE_GUIDE 2 forbids that decorator, but it cannot exist
+        # without importing and calling `registry`, and both of those are
+        # already reported (legacy-import, legacy-orm). A dedicated rule needed
+        # its own provenance tracking to tell a SQLAlchemy registry from an
+        # unrelated `@app.mapped`, which produced false positives and bugs
+        # across several review rounds while adding no coverage.
         if not self._is_model_class(node):
             self.generic_visit(node)
             return

@@ -48,12 +48,14 @@ CASES = [
         "import sqlalchemy.orm as so\nBase = so.declarative_base()\n",
         True, {"legacy-orm"}, id="aliased-module",
     ),
+    # There is no dedicated mapper-registry rule: the decorator cannot exist
+    # without importing and calling registry, which are already violations.
     pytest.param(
         "from sqlalchemy.orm import registry\n"
         "mapper_registry = registry()\n"
         "@mapper_registry.mapped\n"
         "class T:\n    '''d'''\n    __tablename__ = 't'\n",
-        True, {"mapper-registry"}, id="mapper-registry-mapped",
+        True, {"legacy-import", "legacy-orm"}, id="mapper-registry-mapped",
     ),
     pytest.param(
         "from sqlalchemy import Table as T\n"
@@ -211,6 +213,21 @@ CASES = [
         "match obj:\n    case T:\n        T('widget')\n",
         False, set(), id="match-capture-shadows-alias",
     ),
+    # A later non-SQLAlchemy import takes the name back from a star import.
+    pytest.param(
+        "from sqlalchemy import *\nfrom widgets import Table\nTable('widget')\n",
+        False, set(), id="star-import-then-reimported",
+    ),
+    # Lambda parameters are ast.arg, not Name(Store).
+    pytest.param(
+        "from sqlalchemy import Table\nf = lambda Table: Table('widget')\n",
+        False, set(), id="lambda-param-shadows-import",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table as T\n"
+        "match obj:\n    case {**T}:\n        T('widget')\n",
+        False, set(), id="match-mapping-rest-shadows-alias",
+    ),
 ]
 
 
@@ -256,22 +273,26 @@ def test_gate_verdict(source, should_flag, expected_rules):
         assert not rules, f"expected no findings, got {sorted(rules)}:\n{out}"
 
 
-def test_registry_reassignment_does_not_trigger_decorator_rule():
-    """After `mapper_registry = app_thing`, @mapper_registry.mapped is not ours.
+def test_mapper_registry_is_covered_without_a_dedicated_rule():
+    """STYLE_GUIDE 2 forbids @mapper_registry.mapped, and it stays covered.
 
-    This file still trips `legacy-import` (importing `registry` is itself a
-    violation), so it cannot be asserted clean -- the point is narrower: the
-    mapper-registry decorator rule must not fire once the name is rebound.
+    There is deliberately no `mapper-registry` rule: the decorator cannot exist
+    without importing and calling `registry`, so the pattern is caught anyway.
+    A dedicated rule needed provenance tracking to tell a SQLAlchemy registry
+    from an unrelated `@app.mapped`, which produced false positives and bugs
+    over several review rounds while adding no coverage. This test pins that
+    trade: the pattern must remain reported, by other rules.
     """
     code, out, rules = run_gate(
         "from sqlalchemy.orm import registry\n"
         "mapper_registry = registry()\n"
-        "mapper_registry = app_thing\n"
         "@mapper_registry.mapped\n"
-        "class T:\n    '''d'''\n    x = 1\n"
+        "class T:\n    '''d'''\n    __tablename__ = 't'\n"
     )
-    assert code in (0, 1), out
-    assert "mapper-registry" not in rules, f"decorator rule fired on a rebound name:\n{out}"
+    assert code == 1, f"the legacy registry pattern must still be reported:\n{out}"
+    assert {"legacy-import", "legacy-orm"} <= rules, (
+        f"expected the registry import and call to be flagged; got {sorted(rules)}"
+    )
 
 
 def test_gate_is_clean_on_its_own_repo():
