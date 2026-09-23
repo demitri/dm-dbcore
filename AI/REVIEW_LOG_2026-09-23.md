@@ -9,8 +9,8 @@ gaps in `_rebound_names`. That residual is closed here.
 - **Reviewer:** Opus sub-agent (general-purpose), one session for all four
   rounds, so each round saw its own earlier findings.
 - **Stopping:** round 4 was **dry**.
-- **Panel:** Opus only, at the owner's request. No codex or sonnet round was
-  run on this range (see Residuals).
+- **Panel:** Opus, then one codex round (at the end of this log), both at
+  the owner's request. No sonnet round (see Residuals).
 
 Prompts were the canonical minimal form:
 
@@ -102,9 +102,9 @@ fixes of the fix, then dry.
 
 ## Residuals
 
-1. **The reviewer panel is incomplete.** The standing policy wants codex
-   and sonnet rounds as well, for a diverse panel. This cycle was Opus alone,
-   at the owner's request.
+1. **The reviewer panel is incomplete.** The standing policy also wants a
+   sonnet round. Codex ran one round afterwards (see the end of this log),
+   and that round's fix commit has not been reviewed.
 2. **The author of the fixes is the orchestrating session.** Every fix was
    verified by execution (probe files plus the suite), and the reviewer
    independently re-ran its probes each round.
