@@ -53,6 +53,8 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
     that sets `__tablename__` IS reported. That attribute pair is SQLAlchemy's
     declarative signature, and proving provenance instead is what the earlier
     version of this rule got wrong.
+    The standalone `@mapped_as_dataclass(reg)` is resolved like any call, so
+    one re-exported through a non-SQLAlchemy module is not recognised.
   - What a non-SQLAlchemy `from x import *` exports. The gate assumes it may
     rebind anything and stops resolving every SQLAlchemy name imported before
     it, `sa.` module aliases included, until SQLAlchemy is imported again.
