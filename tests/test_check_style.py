@@ -69,6 +69,29 @@ CASES = [
         "class T:\n    '''d'''\n    __table__ = t\n",
         True, {"mapper-registry"}, id="mapped-as-dataclass",
     ),
+    pytest.param(
+        "from .base import reg\n"
+        "@reg.mapped_as_dataclass(unsafe_hash=True)\n"
+        "class T:\n    '''d'''\n    __tablename__ = 't'\n",
+        True, {"mapper-registry"}, id="mapped-as-dataclass-called",
+    ),
+    pytest.param(
+        "from sqlalchemy.orm import mapped_as_dataclass\nfrom .base import reg\n"
+        "@mapped_as_dataclass(reg)\n"
+        "class T:\n    '''d'''\n    __tablename__ = 't'\n",
+        True, {"mapper-registry"}, id="standalone-mapped-as-dataclass",
+    ),
+    pytest.param(
+        "from sqlalchemy import Column\nfrom .base import reg\n"
+        "@reg.mapped\n"
+        "class T:\n    '''d'''\n    __tablename__ = 't'\n    x = Column()\n",
+        True, {"mapper-registry", "manual-column"}, id="registry-mapped-manual-column",
+    ),
+    pytest.param(
+        "from app import db\n"
+        "class Mixin(db.Base):\n    '''d'''\n    __abstract__ = True\n",
+        False, set(), id="abstract-base-is-not-a-model",
+    ),
     # A model reached through a module attribute is still a model.
     pytest.param(
         "import sqlalchemy as sa\nfrom app import db\n"
@@ -311,6 +334,9 @@ def test_every_bare_identifier_binding_form_is_classified():
     have a `name`, `rest` or `arg` field and requires each to be either handled
     (_BINDING_FIELDS) or deliberately excluded (_NOT_BINDING) -- so a binding
     form added by a future Python fails here instead of in review.
+
+    Blind spot: only those three field names are searched. A future binding
+    form stored under another field (`names`, `target`, ...) passes unnoticed.
     """
     sys.path.insert(0, str(GATE.parent))
     try:

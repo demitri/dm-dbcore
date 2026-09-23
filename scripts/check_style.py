@@ -40,7 +40,12 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
     takes the name back.
   - Model classes that inherit from Base indirectly. A class counts as a model
     only if it names `Base` (or `x.Base`) directly among its bases, so
-    `class Mixin(Base)` / `class T(Mixin)` checks Mixin but not T.
+    `class Mixin(Base)` / `class T(Mixin)` checks Mixin but not T. Classes
+    setting `__abstract__ = True` are skipped.
+  - Whose Base it is. Any `x.Base` counts, so an unrelated `somelib.Base`
+    subclass in a scanned tree would be flagged -- accepted, because `db.Base`
+    is the common way to reach the project's own Base and model trees rarely
+    subclass another library's `Base`.
   - Where a registry came from. `@x.mapped` is reported only on a class that
     also sets `__tablename__` or `__table__`; a registry imported from another
     module is caught that way, but a decorated class with neither attribute is
@@ -125,6 +130,19 @@ _NOT_BINDING = {
 }
 
 
+_REGISTRY_DECORATORS = ("mapped", "mapped_as_dataclass")
+
+
+def _is_registry_decorator(dec: ast.expr) -> bool:
+    """`@reg.mapped`, `@reg.mapped_as_dataclass(...)`, or the standalone
+    `@mapped_as_dataclass(reg)` from sqlalchemy.orm (also via `orm.`)."""
+    if isinstance(dec, ast.Call):
+        dec = dec.func
+    if isinstance(dec, ast.Attribute):
+        return dec.attr in _REGISTRY_DECORATORS
+    return isinstance(dec, ast.Name) and dec.id == "mapped_as_dataclass"
+
+
 def _rebound_names(tree: ast.AST) -> set:
     """Every name the module binds to something of its own.
 
@@ -160,6 +178,16 @@ def _assigns_name(stmt: ast.stmt, name: str) -> bool:
     if isinstance(stmt, ast.AnnAssign):
         return isinstance(stmt.target, ast.Name) and stmt.target.id == name
     return False
+
+
+def _assigns_name_true(cls: ast.ClassDef, name: str) -> bool:
+    """True if the class body sets `name = True`."""
+    return any(
+        _assigns_name(s, name)
+        and isinstance(s.value, ast.Constant)
+        and s.value.value is True
+        for s in cls.body
+    )
 
 
 class StyleChecker(ast.NodeVisitor):
@@ -278,10 +306,7 @@ class StyleChecker(ast.NodeVisitor):
         what makes the decorator SQLAlchemy's, and an unrelated `@app.mapped`
         on a class without one is left alone.
         """
-        decorated = any(
-            isinstance(d, ast.Attribute) and d.attr in ("mapped", "mapped_as_dataclass")
-            for d in node.decorator_list
-        )
+        decorated = any(_is_registry_decorator(d) for d in node.decorator_list)
         return decorated and any(
             _assigns_name(s, "__tablename__") or _assigns_name(s, "__table__")
             for s in node.body
@@ -379,7 +404,13 @@ class StyleChecker(ast.NodeVisitor):
                 "inherit from Base instead",
             )
 
-        if not self._is_model_class(node):
+        if self._is_registry_mapped_class(node):
+            # Already a violation, but a manual column in it is a second one.
+            for stmt in node.body:
+                self._check_no_manual_columns(node, stmt)
+        if not self._is_model_class(node) or _assigns_name_true(node, "__abstract__"):
+            # `__abstract__ = True` is a legitimate declarative base with no
+            # table of its own.
             self.generic_visit(node)
             return
 
