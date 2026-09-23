@@ -32,9 +32,9 @@ jobs:
       - uses: actions/checkout@v4
 
       # Pinned to 3.12 rather than run across the matrix, and the reason is not
-      # convenience: scripts/check_style.py inspects ast.MatchAs / ast.MatchStar
-      # / ast.MatchMapping, which do not exist before Python 3.10, and its test
-      # fixtures contain `match` statements that are a SyntaxError before 3.10.
+      # convenience: scripts/check_style.py parses with the running Python's
+      # ast, so it cannot read `match` statements before 3.10, and its test
+      # fixtures contain `match` (and 3.12 PEP 695) syntax.
       #
       # That is a constraint on the DEVELOPER TOOL, not on the package. The gate
       # lives in scripts/ and is not part of the distribution (see

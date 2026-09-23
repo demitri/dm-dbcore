@@ -34,6 +34,17 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
     skipped. This under-reports rather than over-reporting, deliberately -- a
     missed violation costs a review comment; a gate that cries wolf gets turned
     off. Real model files do not rebind `Table`.
+    Imports are the exception: they are processed in source order (still
+    ignoring scope), so `from widgets import Table` shadows a preceding
+    `from sqlalchemy import *` but a later `from sqlalchemy import Table`
+    takes the name back.
+  - Model classes that inherit from Base indirectly. A class counts as a model
+    only if it names `Base` (or `x.Base`) directly among its bases, so
+    `class Mixin(Base)` / `class T(Mixin)` checks Mixin but not T.
+  - Where a registry came from. `@x.mapped` is reported only on a class that
+    also sets `__tablename__` or `__table__`; a registry imported from another
+    module is caught that way, but a decorated class with neither attribute is
+    not.
   - Code inside strings, docstrings, or comments (deliberate: examples in prose
     are not executed).
   - Whether a docstring is accurate, only that model classes have one.
@@ -86,14 +97,42 @@ def _is_sqlalchemy_module(module: str) -> bool:
     return bool(module) and (module == "sqlalchemy" or module.startswith("sqlalchemy."))
 
 
+# AST node types that bind a bare identifier (a str field, not a Name node),
+# and which field holds it. Keyed by class name so that forms added in later
+# Pythons (PEP 695 type parameters, 3.12) are simply absent on older ones.
+# tests/test_check_style.py enumerates every ast class with a `name`, `rest`
+# or `arg` field and fails unless it is listed here or in _NOT_BINDING, so a
+# new binding form surfaces as a test failure rather than a review finding.
+_BINDING_FIELDS = {
+    "arg": "arg",  # def and lambda parameters
+    "ExceptHandler": "name",  # except E as e
+    "MatchAs": "name",  # case Foo() as bar / case bar
+    "MatchStar": "name",  # case [*rest]
+    "MatchMapping": "rest",  # case {**rest}
+    "FunctionDef": "name",
+    "AsyncFunctionDef": "name",
+    "ClassDef": "name",
+    "TypeVar": "name",  # class C[T]
+    "ParamSpec": "name",  # class C[**P]
+    "TypeVarTuple": "name",  # class C[*Ts]
+}
+
+# Node types with such a field that are deliberately not treated as bindings.
+_NOT_BINDING = {
+    "alias": "imports are order-dependent; handled by visit_Import/visit_ImportFrom",
+    "keyword": "a call's keyword argument name, not a binding",
+    "TypeAlias": "`type X = ...` binds through a Name(Store), caught directly",
+}
+
+
 def _rebound_names(tree: ast.AST) -> set:
     """Every name the module binds to something of its own.
 
-    One pass instead of a visitor per binding form. Enumerating the forms --
-    assignment, tuple unpacking, `for`, `with ... as`, `except ... as`, walrus,
-    comprehension targets, `match` captures, `def`, `class` -- was a losing
-    game: four review rounds, four more forms each time. Instead: any name that
-    appears in a Store context anywhere is treated as not-SQLAlchemy's.
+    One pass instead of a visitor per binding form. Enumerating the forms as
+    visitors was a losing game: four review rounds, four more forms each time.
+    Instead: any Name in a Store context, plus the bare-identifier forms in
+    _BINDING_FIELDS, is treated as not-SQLAlchemy's. Imports are not included
+    -- see visit_ImportFrom.
 
     This is deliberately conservative and flat. It ignores scope, so a name
     rebound anywhere is untrusted everywhere, and it errs toward NOT checking a
@@ -104,25 +143,14 @@ def _rebound_names(tree: ast.AST) -> set:
     names = set()
     for node in ast.walk(tree):
         # Covers Assign, AnnAssign, AugAssign, For, With-as, walrus,
-        # comprehension targets, tuple/list unpacking, starred targets --
-        # anything that binds a Name.
+        # comprehension targets, tuple/list unpacking, starred targets, `type`
+        # aliases -- anything that binds a Name.
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             names.add(node.id)
-        # Parameters, of both `def` and `lambda` -- these are ast.arg, not Name.
-        elif isinstance(node, ast.arg):
-            names.add(node.arg)
-        # `except SomeError as e` -- a bare identifier, not a Name node.
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            names.add(node.name)
-        # `case Foo() as bar:` / `case bar:` / `case [*rest]` / `case {**rest}`
-        # -- all bare identifiers.
-        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
-            names.add(node.name)
-        elif isinstance(node, ast.MatchMapping) and node.rest:
-            names.add(node.rest)
-        # `def Table(...)` / `class Table:` shadow an import.
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
+            continue
+        field = _BINDING_FIELDS.get(type(node).__name__)
+        if field and getattr(node, field):
+            names.add(getattr(node, field))
     return names
 
 
@@ -156,6 +184,11 @@ class StyleChecker(ast.NodeVisitor):
         # Names this module binds itself, from a pre-pass -- see
         # _rebound_names(). A name in here is never resolved as SQLAlchemy's.
         self.rebound: set = set()
+        # Names a non-SQLAlchemy import has taken since the last
+        # `from sqlalchemy import *`. Consulted only by the star fallback:
+        # unlike `rebound`, this is order-dependent, so a later explicit
+        # SQLAlchemy import (or another star import) can take the name back.
+        self.import_shadowed: set = set()
 
     def report(self, node: ast.AST, rule: str, message: str) -> None:
         self.violations.append(
@@ -187,11 +220,13 @@ class StyleChecker(ast.NodeVisitor):
         for alias in node.names:
             if alias.name == "*":
                 self.sa_star = True
+                self.import_shadowed.clear()
                 continue
             if alias.name in LEGACY_ORM_NAMES:
                 self.report(node, "legacy-import", LEGACY_ORM_NAMES[alias.name])
             local = alias.asname or alias.name
             self.sa_names[local] = alias.name
+            self.import_shadowed.discard(local)
             # The imported name may itself be a submodule, as in
             # `from sqlalchemy import orm` -> orm.declarative_base(). Record it
             # as a module too so attribute calls through it resolve.
@@ -217,19 +252,39 @@ class StyleChecker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _unbind(self, name: str) -> None:
-        """Forget a SQLAlchemy binding whose local name has been rebound.
-
-        Also records the name as rebound, so that a bare `from sqlalchemy
-        import *` cannot go on claiming it.
-        """
+        """Forget a SQLAlchemy binding whose local name a non-SQLAlchemy
+        import has taken, so that a `from sqlalchemy import *` cannot go on
+        claiming it either."""
         self.sa_names.pop(name, None)
         self.sa_modules.pop(name, None)
-        self.rebound.add(name)
+        self.import_shadowed.add(name)
 
     def _is_model_class(self, node: ast.ClassDef) -> bool:
-        """A model class inherits from Base (STYLE_GUIDE 2)."""
+        """A model class inherits from Base (STYLE_GUIDE 2), as `Base` or
+        through a module, as in `db.Base`."""
         return any(
-            isinstance(base, ast.Name) and base.id == "Base" for base in node.bases
+            (isinstance(base, ast.Name) and base.id == "Base")
+            or (isinstance(base, ast.Attribute) and base.attr == "Base")
+            for base in node.bases
+        )
+
+    @staticmethod
+    def _is_registry_mapped_class(node: ast.ClassDef) -> bool:
+        """`@x.mapped` on a class that sets `__tablename__` or `__table__`.
+
+        No attempt is made to prove x is a SQLAlchemy registry -- that needed
+        provenance tracking that broke across review rounds, and cannot see a
+        registry imported from another module anyway. The table attribute is
+        what makes the decorator SQLAlchemy's, and an unrelated `@app.mapped`
+        on a class without one is left alone.
+        """
+        decorated = any(
+            isinstance(d, ast.Attribute) and d.attr in ("mapped", "mapped_as_dataclass")
+            for d in node.decorator_list
+        )
+        return decorated and any(
+            _assigns_name(s, "__tablename__") or _assigns_name(s, "__table__")
+            for s in node.body
         )
 
     def _resolve_call(self, node: ast.Call):
@@ -247,7 +302,7 @@ class StyleChecker(ast.NodeVisitor):
                 return None
             if func.id in self.sa_names:
                 return self.sa_names[func.id]
-            if self.sa_star:
+            if self.sa_star and func.id not in self.import_shadowed:
                 # `from sqlalchemy import *` -- match on the bare name.
                 return func.id
             return None
@@ -316,13 +371,14 @@ class StyleChecker(ast.NodeVisitor):
     # -- classes -------------------------------------------------------------
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        # NOTE: there is deliberately no separate `@mapper_registry.mapped`
-        # rule. STYLE_GUIDE 2 forbids that decorator, but it cannot exist
-        # without importing and calling `registry`, and both of those are
-        # already reported (legacy-import, legacy-orm). A dedicated rule needed
-        # its own provenance tracking to tell a SQLAlchemy registry from an
-        # unrelated `@app.mapped`, which produced false positives and bugs
-        # across several review rounds while adding no coverage.
+        if self._is_registry_mapped_class(node):
+            self.report(
+                node,
+                "mapper-registry",
+                "STYLE_GUIDE 2: `@mapper_registry.mapped` is legacy; "
+                "inherit from Base instead",
+            )
+
         if not self._is_model_class(node):
             self.generic_visit(node)
             return

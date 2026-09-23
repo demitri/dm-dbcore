@@ -48,14 +48,32 @@ CASES = [
         "import sqlalchemy.orm as so\nBase = so.declarative_base()\n",
         True, {"legacy-orm"}, id="aliased-module",
     ),
-    # There is no dedicated mapper-registry rule: the decorator cannot exist
-    # without importing and calling registry, which are already violations.
     pytest.param(
         "from sqlalchemy.orm import registry\n"
         "mapper_registry = registry()\n"
         "@mapper_registry.mapped\n"
         "class T:\n    '''d'''\n    __tablename__ = 't'\n",
-        True, {"legacy-import", "legacy-orm"}, id="mapper-registry-mapped",
+        True, {"legacy-import", "legacy-orm", "mapper-registry"}, id="mapper-registry-mapped",
+    ),
+    # The realistic layout: the registry lives in base.py and is imported, so
+    # this file never mentions registry() -- only the decorator gives it away.
+    pytest.param(
+        "from .base import mapper_registry\n"
+        "@mapper_registry.mapped\n"
+        "class T:\n    '''d'''\n    __tablename__ = 't'\n",
+        True, {"mapper-registry"}, id="mapper-registry-imported-from-base",
+    ),
+    pytest.param(
+        "from .base import reg\n"
+        "@reg.mapped_as_dataclass\n"
+        "class T:\n    '''d'''\n    __table__ = t\n",
+        True, {"mapper-registry"}, id="mapped-as-dataclass",
+    ),
+    # A model reached through a module attribute is still a model.
+    pytest.param(
+        "import sqlalchemy as sa\nfrom app import db\n"
+        "class T(db.Base):\n    '''d'''\n    x = sa.Column(sa.Integer)\n",
+        True, {"manual-column", "no-table"}, id="attribute-base-is-model",
     ),
     pytest.param(
         "from sqlalchemy import Table as T\n"
@@ -228,6 +246,18 @@ CASES = [
         "match obj:\n    case {**T}:\n        T('widget')\n",
         False, set(), id="match-mapping-rest-shadows-alias",
     ),
+    # A non-SQLAlchemy import in one function must not permanently disown the
+    # name: a later explicit SQLAlchemy import takes it back.
+    pytest.param(
+        "def helper():\n    from widgets import Table\n    return Table\n"
+        "from sqlalchemy import Table\nTable('t', md)\n",
+        True, {"no-reflection", "no-schema"}, id="sqlalchemy-import-reclaims-name",
+    ),
+    # ...and so does a later star import.
+    pytest.param(
+        "from widgets import Table\nfrom sqlalchemy import *\nTable('t', md)\n",
+        True, {"no-reflection", "no-schema"}, id="star-import-reclaims-name",
+    ),
 ]
 
 
@@ -273,26 +303,43 @@ def test_gate_verdict(source, should_flag, expected_rules):
         assert not rules, f"expected no findings, got {sorted(rules)}:\n{out}"
 
 
-def test_mapper_registry_is_covered_without_a_dedicated_rule():
-    """STYLE_GUIDE 2 forbids @mapper_registry.mapped, and it stays covered.
+def test_every_bare_identifier_binding_form_is_classified():
+    """Every ast node type that can carry a bound identifier is accounted for.
 
-    There is deliberately no `mapper-registry` rule: the decorator cannot exist
-    without importing and calling `registry`, so the pattern is caught anyway.
-    A dedicated rule needed provenance tracking to tell a SQLAlchemy registry
-    from an unrelated `@app.mapped`, which produced false positives and bugs
-    over several review rounds while adding no coverage. This test pins that
-    trade: the pattern must remain reported, by other rules.
+    _rebound_names grew one binding form per review round until it became
+    table-driven. This enumerates the ast classes of the running Python that
+    have a `name`, `rest` or `arg` field and requires each to be either handled
+    (_BINDING_FIELDS) or deliberately excluded (_NOT_BINDING) -- so a binding
+    form added by a future Python fails here instead of in review.
     """
+    sys.path.insert(0, str(GATE.parent))
+    try:
+        import check_style
+    finally:
+        sys.path.remove(str(GATE.parent))
+    import ast
+
+    candidates = {
+        name
+        for name, cls in vars(ast).items()
+        if isinstance(cls, type)
+        and issubclass(cls, ast.AST)
+        and {"name", "rest", "arg"} & set(getattr(cls, "_fields", ()))
+    }
+    classified = set(check_style._BINDING_FIELDS) | set(check_style._NOT_BINDING)
+    unclassified = candidates - classified
+    assert not unclassified, (
+        f"ast node types not classified as binding or non-binding: {sorted(unclassified)}"
+    )
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 syntax")
+@pytest.mark.parametrize("header", ["class C[Table]:", "class C[*Table]:", "class C[**Table]:"])
+def test_type_parameters_shadow_import(header):
     code, out, rules = run_gate(
-        "from sqlalchemy.orm import registry\n"
-        "mapper_registry = registry()\n"
-        "@mapper_registry.mapped\n"
-        "class T:\n    '''d'''\n    __tablename__ = 't'\n"
+        f"from sqlalchemy import Table\n{header}\n    pass\nTable('widget')\n"
     )
-    assert code == 1, f"the legacy registry pattern must still be reported:\n{out}"
-    assert {"legacy-import", "legacy-orm"} <= rules, (
-        f"expected the registry import and call to be flagged; got {sorted(rules)}"
-    )
+    assert code == 0 and not rules, f"a type parameter shadows the import:\n{out}"
 
 
 def test_gate_is_clean_on_its_own_repo():
