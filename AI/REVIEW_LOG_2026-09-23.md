@@ -118,3 +118,37 @@ fixes of the fix, then dry.
 - Style gate: **0 violations across 20 files**, exit 0.
 - Full suite: **227 passed, 18 skipped** (the 14 PostgreSQL round-trip tests
   need a server; the 4 `without_numpy` tests skip where NumPy is installed).
+
+---
+
+## Codex round (a3c1c40..aeddd19): 4 findings, 2 fixed, 2 pushed back
+
+Run at the owner's request, one round only. Dispatched through the
+codex-rescue agent with the canonical prompt (`Review a3c1c40..aeddd19` plus
+the higher-level line), read-only. Thread `01a0ccdb-c676-7a80-9a6c-f8d4d813a9d1`.
+All four findings were reproduced on scratch files.
+
+1. **`@app.mapped` on a class with `__tablename__` is flagged. PUSHED BACK.**
+   Real, but this is the deliberate round-1 trade-off. Tracking where a
+   registry came from is what failed before, and it cannot see a registry
+   imported from another file. A class that sets `__tablename__` or
+   `__table__` under a `.mapped` decorator is SQLAlchemy's declarative
+   signature. Now listed explicitly as an accepted over-report in the
+   gate's docstring.
+2. **An aliased `mapped_as_dataclass as madc` escaped the gate. FIXED.**
+   The decorator check now resolves names through `sa_names`.
+3. **The PEP 695 test encodes the wrong scope semantics. PUSHED BACK, test
+   reworded.** Codex is right that type parameters are class-scoped. But
+   the gate is flat by documented design; function parameters behave the
+   same way. The test was renamed and its docstring now pins the policy
+   instead of claiming anything about Python.
+4. **`from widgets import *` left SQLAlchemy names resolved: a false
+   positive. FIXED.** A non-SQLAlchemy star import now drops every tracked
+   SQLAlchemy binding until SQLAlchemy is imported again (under-report).
+   Documented as a blind spot.
+- **Higher-level: a scope-aware symbol resolver.** Real, but a redesign.
+  Added to TODO.md.
+
+**Residual:** the fix commit for this round has not been reviewed. The
+owner asked for one codex round; a follow-up would be
+`addressed in <hash>; review --resume`.

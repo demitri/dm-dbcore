@@ -286,3 +286,4 @@ extra that `pyproject.toml` has. Added, but the next drift is a matter of time.
 
 - [ ] `DatabaseConnection.py:518` uses `assert` for the None-connection-string guard — stripped under `python -O`, leaving an unrelated AttributeError; replace with an explicit raise. (sonnet round 3, 2026-08-24; pre-existing)
 - [ ] Singleton: log at debug level when a losing concurrent caller passed a different `database_connection_string` than the registered winner's — the first-caller-wins contract is documented but now officially exercised concurrently. (sonnet round 3, 2026-08-24)
+- [ ] Style gate: replace the flat `rebound` / `import_shadowed` model with one scope-aware symbol resolver (module/class/function/type-parameter scope stack) shared by calls, decorators and bases. Would remove the documented flat-scope false negatives (e.g. a function parameter or PEP 695 type parameter named `Table` disowns the module-level import). (codex, 2026-09-23)

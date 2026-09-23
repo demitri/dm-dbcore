@@ -49,7 +49,13 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
   - Where a registry came from. `@x.mapped` is reported only on a class that
     also sets `__tablename__` or `__table__`; a registry imported from another
     module is caught that way, but a decorated class with neither attribute is
-    not.
+    not. The converse is accepted too: an unrelated `@app.mapped` on a class
+    that sets `__tablename__` IS reported. That attribute pair is SQLAlchemy's
+    declarative signature, and proving provenance instead is what the earlier
+    version of this rule got wrong.
+  - What a non-SQLAlchemy `from x import *` exports. The gate assumes it may
+    rebind anything and stops resolving every SQLAlchemy name imported before
+    it, `sa.` module aliases included, until SQLAlchemy is imported again.
   - Code inside strings, docstrings, or comments (deliberate: examples in prose
     are not executed).
   - Whether a docstring is accurate, only that model classes have one.
@@ -133,14 +139,18 @@ _NOT_BINDING = {
 _REGISTRY_DECORATORS = ("mapped", "mapped_as_dataclass")
 
 
-def _is_registry_decorator(dec: ast.expr) -> bool:
+def _is_registry_decorator(dec: ast.expr, sa_names: dict) -> bool:
     """`@reg.mapped`, `@reg.mapped_as_dataclass(...)`, or the standalone
-    `@mapped_as_dataclass(reg)` from sqlalchemy.orm (also via `orm.`)."""
+    `@mapped_as_dataclass(reg)` from sqlalchemy.orm -- also via `orm.` or an
+    import alias, resolved through `sa_names`."""
     if isinstance(dec, ast.Call):
         dec = dec.func
     if isinstance(dec, ast.Attribute):
         return dec.attr in _REGISTRY_DECORATORS
-    return isinstance(dec, ast.Name) and dec.id == "mapped_as_dataclass"
+    return isinstance(dec, ast.Name) and (
+        dec.id == "mapped_as_dataclass"
+        or sa_names.get(dec.id) == "mapped_as_dataclass"
+    )
 
 
 def _rebound_names(tree: ast.AST) -> set:
@@ -233,7 +243,16 @@ class StyleChecker(ast.NodeVisitor):
             # matters even with no prior binding, because a preceding
             # `from sqlalchemy import *` would otherwise claim the bare name.
             for alias in node.names:
-                if alias.name != "*":
+                if alias.name == "*":
+                    # `from widgets import *` may rebind any name, and which
+                    # ones is unknowable here. Drop every SQLAlchemy binding
+                    # (under-report, never cry wolf); a later SQLAlchemy
+                    # import takes its names back.
+                    self.sa_names.clear()
+                    self.sa_modules.clear()
+                    self.sa_star = False
+                    self.import_shadowed.clear()
+                else:
                     self._unbind(alias.asname or alias.name)
             self.generic_visit(node)
             return
@@ -296,8 +315,7 @@ class StyleChecker(ast.NodeVisitor):
             for base in node.bases
         )
 
-    @staticmethod
-    def _is_registry_mapped_class(node: ast.ClassDef) -> bool:
+    def _is_registry_mapped_class(self, node: ast.ClassDef) -> bool:
         """`@x.mapped` on a class that sets `__tablename__` or `__table__`.
 
         No attempt is made to prove x is a SQLAlchemy registry -- that needed
@@ -306,7 +324,9 @@ class StyleChecker(ast.NodeVisitor):
         what makes the decorator SQLAlchemy's, and an unrelated `@app.mapped`
         on a class without one is left alone.
         """
-        decorated = any(_is_registry_decorator(d) for d in node.decorator_list)
+        decorated = any(
+            _is_registry_decorator(d, self.sa_names) for d in node.decorator_list
+        )
         return decorated and any(
             _assigns_name(s, "__tablename__") or _assigns_name(s, "__table__")
             for s in node.body

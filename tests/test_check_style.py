@@ -295,6 +295,21 @@ CASES = [
         "from widgets import Table\nfrom sqlalchemy import *\nTable('t', md)\n",
         True, {"no-reflection", "no-schema"}, id="star-import-reclaims-name",
     ),
+    # An unknown star import may rebind anything: stop resolving.
+    pytest.param(
+        "from sqlalchemy import Table\nfrom widgets import *\nTable('widget')\n",
+        False, set(), id="foreign-star-import-disowns-names",
+    ),
+    pytest.param(
+        "from widgets import *\nfrom sqlalchemy import Table\nTable('t', md)\n",
+        True, {"no-reflection", "no-schema"}, id="sqlalchemy-import-after-foreign-star",
+    ),
+    pytest.param(
+        "from sqlalchemy.orm import mapped_as_dataclass as madc\nfrom .base import reg\n"
+        "@madc(reg)\n"
+        "class T:\n    '''d'''\n    __tablename__ = 't'\n",
+        True, {"mapper-registry"}, id="aliased-standalone-mapped-as-dataclass",
+    ),
 ]
 
 
@@ -386,11 +401,15 @@ def test_every_bare_identifier_binding_form_is_classified():
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 syntax")
 @pytest.mark.parametrize("header", ["class C[Table]:", "class C[*Table]:", "class C[**Table]:"])
-def test_type_parameters_shadow_import(header):
+def test_type_parameters_disown_the_name_file_wide(header):
+    """Python scopes a type parameter to its class; the gate deliberately
+    does not. Like a function parameter, a type parameter named `Table` makes
+    `Table` untrusted everywhere in the file (see _rebound_names). This pins
+    that flat-scope policy -- it is not a claim about Python's semantics."""
     code, out, rules = run_gate(
         f"from sqlalchemy import Table\n{header}\n    pass\nTable('widget')\n"
     )
-    assert code == 0 and not rules, f"a type parameter shadows the import:\n{out}"
+    assert code == 0 and not rules, f"a type parameter did not disown the name:\n{out}"
 
 
 def test_gate_is_clean_on_its_own_repo():
