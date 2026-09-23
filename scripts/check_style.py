@@ -41,7 +41,7 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
   - Model classes that inherit from Base indirectly. A class counts as a model
     only if it names `Base` (or `x.Base`) directly among its bases, so
     `class Mixin(Base)` / `class T(Mixin)` checks Mixin but not T. Classes
-    setting `__abstract__ = True` are skipped.
+    setting `__abstract__ = True` are exempt from no-table only.
   - Whose Base it is. Any `x.Base` counts, so an unrelated `somelib.Base`
     subclass in a scanned tree would be flagged -- accepted, because `db.Base`
     is the common way to reach the project's own Base and model trees rarely
@@ -404,20 +404,20 @@ class StyleChecker(ast.NodeVisitor):
                 "inherit from Base instead",
             )
 
-        if self._is_registry_mapped_class(node):
+        if self._is_model_class(node):
+            self._check_model_class(node)
+        elif self._is_registry_mapped_class(node):
             # Already a violation, but a manual column in it is a second one.
+            # (A registry-mapped Base subclass gets this from _check_model_class.)
             for stmt in node.body:
                 self._check_no_manual_columns(node, stmt)
-        if not self._is_model_class(node) or _assigns_name_true(node, "__abstract__"):
-            # `__abstract__ = True` is a legitimate declarative base with no
-            # table of its own.
-            self.generic_visit(node)
-            return
-
-        self._check_model_class(node)
         self.generic_visit(node)
 
     def _check_model_class(self, node: ast.ClassDef) -> None:
+        # `__abstract__ = True` is a legitimate declarative base with no table
+        # of its own -- but it is exactly where shared columns get declared, so
+        # every other check still applies.
+        abstract = _assigns_name_true(node, "__abstract__")
         has_table = any(_assigns_name(s, "__table__") for s in node.body)
         has_tablename = any(_assigns_name(s, "__tablename__") for s in node.body)
 
@@ -428,7 +428,7 @@ class StyleChecker(ast.NodeVisitor):
                 f"STYLE_GUIDE 3: `{node.name}` uses __tablename__; "
                 "use `__table__ = Table(..., autoload_with=engine)`",
             )
-        elif not has_table:
+        elif not has_table and not abstract:
             self.report(
                 node,
                 "no-table",

@@ -92,6 +92,20 @@ CASES = [
         "class Mixin(db.Base):\n    '''d'''\n    __abstract__ = True\n",
         False, set(), id="abstract-base-is-not-a-model",
     ),
+    # ...but an abstract base is where shared columns get declared, so the
+    # column rule still applies to it.
+    pytest.param(
+        "from sqlalchemy import Column, DateTime\nfrom app import db\n"
+        "class Stamped(db.Base):\n    '''d'''\n    __abstract__ = True\n"
+        "    created = Column(DateTime)\n",
+        True, {"manual-column"}, id="abstract-base-manual-column",
+    ),
+    pytest.param(
+        "from sqlalchemy.orm import mapped_column\nfrom app import db\n"
+        "class Stamped(db.Base):\n    '''d'''\n    __abstract__: bool = True\n"
+        "    created = mapped_column()\n",
+        True, {"manual-column"}, id="annotated-abstract-base-manual-column",
+    ),
     # A model reached through a module attribute is still a model.
     pytest.param(
         "import sqlalchemy as sa\nfrom app import db\n"
@@ -324,6 +338,17 @@ def test_gate_verdict(source, should_flag, expected_rules):
 
     if not should_flag:
         assert not rules, f"expected no findings, got {sorted(rules)}:\n{out}"
+
+
+def test_manual_column_reported_once_on_registry_mapped_base_subclass():
+    """A class both registry-decorated and a Base subclass has two routes to
+    the column check; the finding must appear once, or the count is wrong."""
+    code, out, rules = run_gate(
+        "from sqlalchemy import Column\nfrom .base import Base, reg\n"
+        "@reg.mapped\n"
+        "class T(Base):\n    \'\'\'d\'\'\'\n    __tablename__ = 't'\n    x = Column()\n"
+    )
+    assert out.count("[manual-column]") == 1, f"expected one manual-column finding:\n{out}"
 
 
 def test_every_bare_identifier_binding_form_is_classified():
