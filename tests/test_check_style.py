@@ -310,6 +310,21 @@ CASES = [
         "class T:\n    '''d'''\n    __tablename__ = 't'\n",
         True, {"mapper-registry"}, id="aliased-standalone-mapped-as-dataclass",
     ),
+    # The standalone decorator resolves like any call: rebinding and a
+    # foreign star import both disown it.
+    pytest.param(
+        "from sqlalchemy.orm import mapped_as_dataclass as madc\n"
+        "madc = app.decorator\n"
+        "@madc(reg)\n"
+        "class T:\n    '''d'''\n    __tablename__ = 't'\n",
+        False, set(), id="rebound-standalone-decorator",
+    ),
+    pytest.param(
+        "from sqlalchemy.orm import mapped_as_dataclass\nfrom widgets import *\n"
+        "@mapped_as_dataclass(reg)\n"
+        "class T:\n    '''d'''\n    __tablename__ = 't'\n",
+        False, set(), id="foreign-star-disowns-standalone-decorator",
+    ),
 ]
 
 

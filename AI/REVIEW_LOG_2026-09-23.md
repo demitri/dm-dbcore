@@ -149,6 +149,25 @@ All four findings were reproduced on scratch files.
 - **Higher-level: a scope-aware symbol resolver.** Real, but a redesign.
   Added to TODO.md.
 
-**Residual:** the fix commit for this round has not been reviewed. The
-owner asked for one codex round; a follow-up would be
-`addressed in <hash>; review --resume`.
+### Codex round 2 (b7d2370): 2 findings, both real, both in round 1's fix
+
+Same thread. Prompt: `addressed in b7d2370; review --resume`, plus one line
+added at the owner's direction: "No redesigns or new work: review only
+whether the fixes are correct."
+
+1. **The aliased decorator ignored rebinding.** After
+   `madc = app.decorator`, `@madc(reg)` was still reported, which
+   contradicts the flat-scope rule that `_resolve_call` follows.
+2. **The literal `mapped_as_dataclass` was accepted unconditionally**, so a
+   foreign star import did not disown it.
+
+Both are fixed by one change. The standalone decorator is always a call, so
+it now resolves through `_resolve_call`, the same path as every other call:
+aliases, rebinding, star imports and foreign-star invalidation all come with
+it. As a side effect, a `mapped_as_dataclass` re-exported from a
+non-SQLAlchemy module (`from .base import mapped_as_dataclass`) is no longer
+recognised. That is an under-report, in line with the gate's stated
+direction. Tests were added for both of codex's cases.
+
+**Residual:** this second fix commit has not been reviewed. The owner
+capped codex at these two rounds.

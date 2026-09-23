@@ -139,20 +139,6 @@ _NOT_BINDING = {
 _REGISTRY_DECORATORS = ("mapped", "mapped_as_dataclass")
 
 
-def _is_registry_decorator(dec: ast.expr, sa_names: dict) -> bool:
-    """`@reg.mapped`, `@reg.mapped_as_dataclass(...)`, or the standalone
-    `@mapped_as_dataclass(reg)` from sqlalchemy.orm -- also via `orm.` or an
-    import alias, resolved through `sa_names`."""
-    if isinstance(dec, ast.Call):
-        dec = dec.func
-    if isinstance(dec, ast.Attribute):
-        return dec.attr in _REGISTRY_DECORATORS
-    return isinstance(dec, ast.Name) and (
-        dec.id == "mapped_as_dataclass"
-        or sa_names.get(dec.id) == "mapped_as_dataclass"
-    )
-
-
 def _rebound_names(tree: ast.AST) -> set:
     """Every name the module binds to something of its own.
 
@@ -315,6 +301,22 @@ class StyleChecker(ast.NodeVisitor):
             for base in node.bases
         )
 
+    def _is_registry_decorator(self, dec: ast.expr) -> bool:
+        """`@reg.mapped`, `@reg.mapped_as_dataclass(...)`, or the standalone
+        `@mapped_as_dataclass(reg)` from sqlalchemy.orm.
+
+        The standalone form is always a call, so it is resolved exactly as any
+        other call is -- aliases, rebinding and star imports included.
+        """
+        func = dec.func if isinstance(dec, ast.Call) else dec
+        if isinstance(func, ast.Attribute):
+            return func.attr in _REGISTRY_DECORATORS
+        return (
+            isinstance(dec, ast.Call)
+            and isinstance(func, ast.Name)
+            and self._resolve_call(dec) == "mapped_as_dataclass"
+        )
+
     def _is_registry_mapped_class(self, node: ast.ClassDef) -> bool:
         """`@x.mapped` on a class that sets `__tablename__` or `__table__`.
 
@@ -324,9 +326,7 @@ class StyleChecker(ast.NodeVisitor):
         what makes the decorator SQLAlchemy's, and an unrelated `@app.mapped`
         on a class without one is left alone.
         """
-        decorated = any(
-            _is_registry_decorator(d, self.sa_names) for d in node.decorator_list
-        )
+        decorated = any(self._is_registry_decorator(d) for d in node.decorator_list)
         return decorated and any(
             _assigns_name(s, "__tablename__") or _assigns_name(s, "__table__")
             for s in node.body
