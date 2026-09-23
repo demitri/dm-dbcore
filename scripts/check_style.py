@@ -55,9 +55,12 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
     version of this rule got wrong.
     The standalone `@mapped_as_dataclass(reg)` is resolved like any call, so
     one re-exported through a non-SQLAlchemy module is not recognised.
-  - What a non-SQLAlchemy `from x import *` exports. The gate assumes it may
-    rebind anything and stops resolving every SQLAlchemy name imported before
-    it, `sa.` module aliases included, until SQLAlchemy is imported again.
+  - What a non-SQLAlchemy `from x import *` exports. The gate assumes it
+    rebinds nothing, so SQLAlchemy names imported before it stay resolved.
+    Accepted over-report: if `widgets` star-exports an unrelated `Table`, a
+    later `Table(...)` is checked as SQLAlchemy's. The alternative -- dropping
+    every binding -- switched the gate off after `from .base import *`, the
+    usual way model files get Base and engine.
   - Code inside strings, docstrings, or comments (deliberate: examples in prose
     are not executed).
   - Whether a docstring is accurate, only that model classes have one.
@@ -231,16 +234,11 @@ class StyleChecker(ast.NodeVisitor):
             # matters even with no prior binding, because a preceding
             # `from sqlalchemy import *` would otherwise claim the bare name.
             for alias in node.names:
-                if alias.name == "*":
-                    # `from widgets import *` may rebind any name, and which
-                    # ones is unknowable here. Drop every SQLAlchemy binding
-                    # (under-report, never cry wolf); a later SQLAlchemy
-                    # import takes its names back.
-                    self.sa_names.clear()
-                    self.sa_modules.clear()
-                    self.sa_star = False
-                    self.import_shadowed.clear()
-                else:
+                # A foreign `from x import *` is deliberately NOT treated as a
+                # rebinding: `from .base import *` is how model files get Base
+                # and engine, and dropping SQLAlchemy names there silenced the
+                # gate on exactly the files it exists for. See the docstring.
+                if alias.name != "*":
                     self._unbind(alias.asname or alias.name)
             self.generic_visit(node)
             return

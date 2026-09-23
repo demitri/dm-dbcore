@@ -169,5 +169,29 @@ non-SQLAlchemy module (`from .base import mapped_as_dataclass`) is no longer
 recognised. That is an under-report, in line with the gate's stated
 direction. Tests were added for both of codex's cases.
 
-**Residual:** this second fix commit has not been reviewed. The owner
-capped codex at these two rounds.
+The owner capped codex at these two rounds.
+
+## Opus round 5 (58d86df): no defects in the commit; one higher-level regression from b7d2370, reverted
+
+Same Opus session as rounds 1 to 4. Prompt: `Review 58d86df`. One round, at
+the owner's request.
+
+58d86df itself was clean: no double-reporting, no timing issue, and the
+re-export side effect is acknowledged.
+
+**Higher-level: codex finding 4's fix silenced the gate. REAL, reverted.**
+b7d2370 dropped every SQLAlchemy binding after any non-SQLAlchemy star
+import. But `from .base import *` is how model files get Base and engine,
+so the gate went quiet on the files it exists to check, with nothing in its
+output to say so. Reproduced: `import sqlalchemy as sa; from .base import *`
+with an unreflected `sa.Table` and a manual `sa.Column` gave 0 findings, where
+aeddd19 gave three.
+
+The owner chose to keep all names through a foreign star import. **Codex
+finding 4 is therefore reversed:** an unrelated `Table` star-exported by
+`widgets` is flagged, which is an accepted, documented over-report. It is
+rare, and it is visible, where the silencing was not. Both of Opus's probes
+are now tests. The standalone-decorator test from codex round 2 now expects
+the decorator to be flagged after a foreign star import.
+
+**Residual:** this revert commit has not been reviewed.

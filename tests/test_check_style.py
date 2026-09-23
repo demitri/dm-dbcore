@@ -295,10 +295,23 @@ CASES = [
         "from widgets import Table\nfrom sqlalchemy import *\nTable('t', md)\n",
         True, {"no-reflection", "no-schema"}, id="star-import-reclaims-name",
     ),
-    # An unknown star import may rebind anything: stop resolving.
+    # A foreign star import does not disown SQLAlchemy names. This flags an
+    # unrelated star-exported Table -- an accepted, documented over-report --
+    # because the alternative silenced the gate after `from .base import *`.
     pytest.param(
         "from sqlalchemy import Table\nfrom widgets import *\nTable('widget')\n",
-        False, set(), id="foreign-star-import-disowns-names",
+        True, {"no-reflection", "no-schema"}, id="foreign-star-import-keeps-names",
+    ),
+    pytest.param(
+        "import sqlalchemy as sa\nfrom .base import *\n"
+        "class T(Base):\n    '''d'''\n"
+        "    __table__ = sa.Table('t', Base.metadata)\n    x = sa.Column(sa.Integer)\n",
+        True, {"no-reflection", "no-schema", "manual-column"},
+        id="base-star-import-keeps-module-alias",
+    ),
+    pytest.param(
+        "from sqlalchemy import Table\nfrom .base import *\nTable('t', Base.metadata)\n",
+        True, {"no-reflection", "no-schema"}, id="base-star-import-keeps-names",
     ),
     pytest.param(
         "from widgets import *\nfrom sqlalchemy import Table\nTable('t', md)\n",
@@ -310,8 +323,8 @@ CASES = [
         "class T:\n    '''d'''\n    __tablename__ = 't'\n",
         True, {"mapper-registry"}, id="aliased-standalone-mapped-as-dataclass",
     ),
-    # The standalone decorator resolves like any call: rebinding and a
-    # foreign star import both disown it.
+    # The standalone decorator resolves like any call: rebinding disowns it,
+    # a foreign star import does not.
     pytest.param(
         "from sqlalchemy.orm import mapped_as_dataclass as madc\n"
         "madc = app.decorator\n"
@@ -323,7 +336,7 @@ CASES = [
         "from sqlalchemy.orm import mapped_as_dataclass\nfrom widgets import *\n"
         "@mapped_as_dataclass(reg)\n"
         "class T:\n    '''d'''\n    __tablename__ = 't'\n",
-        False, set(), id="foreign-star-disowns-standalone-decorator",
+        True, {"mapper-registry"}, id="foreign-star-keeps-standalone-decorator",
     ),
 ]
 
