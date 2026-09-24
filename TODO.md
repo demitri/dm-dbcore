@@ -287,3 +287,43 @@ extra that `pyproject.toml` has. Added, but the next drift is a matter of time.
 - [ ] `DatabaseConnection.py:518` uses `assert` for the None-connection-string guard — stripped under `python -O`, leaving an unrelated AttributeError; replace with an explicit raise. (sonnet round 3, 2026-08-24; pre-existing)
 - [ ] Singleton: log at debug level when a losing concurrent caller passed a different `database_connection_string` than the registered winner's — the first-caller-wins contract is documented but now officially exercised concurrently. (sonnet round 3, 2026-08-24)
 - [ ] Style gate: replace the flat `rebound` / `import_shadowed` model with one scope-aware symbol resolver (module/class/function/type-parameter scope stack) shared by calls, decorators and bases. Would remove the documented flat-scope false negatives (e.g. a function parameter or PEP 695 type parameter named `Table` disowns the module-level import). (codex, 2026-09-23)
+
+## SQLite thread-safety under a multi-threaded server is unverified
+
+Found 2026-09-24 in a *different* project — `$GH/drdemento/scripts/serve.py`,
+which uses raw `sqlite3`, not dm-dbcore — but the bug class applies directly
+here too. That server shared one `sqlite3.Connection` across every Flask
+request thread (`check_same_thread=False`, which disables Python's own
+thread-affinity check but adds no real concurrency safety). Reproduced a
+genuine indefinite hang by stacking overlapping concurrent requests against
+it; a single request in isolation was always fast and correct. Fixed there
+with a hand-rolled `threading.local()`-backed connection, lazily created per
+thread, each wired up identically (custom SQL functions, `ATTACH DATABASE`s)
+via one `_new_connection()` factory — see `DB_` in that file for the pattern.
+
+dm-dbcore's headline feature is explicitly **singleton connection
+management — "one database connection per application"**, and it supports
+SQLite as one of three backends. Whether that combination is actually safe
+under concurrent threads is not established:
+
+- [ ] `DatabaseConnection` does use `scoped_session(sessionmaker(me.engine))`
+      (`DatabaseConnection.py:598`), which gives each thread its own `Session`
+      by default — but a `Session` still checks out a connection from the
+      *engine's pool* as needed, and whether that's safe for SQLite depends on
+      which `poolclass` SQLAlchemy picks for a `sqlite:///` URL, which is
+      version- and configuration-dependent (`NullPool` vs `SingletonThreadPool`
+      vs `StaticPool` behave very differently under concurrent threads —
+      `StaticPool` in particular would reproduce exactly the drdemento bug).
+      **Verify which pool SQLite connections actually get here, under the
+      SQLAlchemy version this package pins, before trusting it.**
+- [ ] Write a concurrency test that reproduces the drdemento failure mode
+      against a dm-dbcore `DatabaseConnection('sqlite:///...')`: several
+      threads issuing overlapping queries through `session_scope(db)`
+      simultaneously, asserting no hang and no serialization worse than what
+      a real connection pool would explain. If it reproduces, fix it (a
+      documented `poolclass=` override for SQLite, or a thread-local
+      connection helper analogous to drdemento's); if it doesn't, document
+      *why* it's safe so the next SQLite-backed project doesn't have to
+      re-derive this.
+- [ ] Either way, document the finding in the README's SQLite section —
+      currently silent on multi-threaded use entirely.
