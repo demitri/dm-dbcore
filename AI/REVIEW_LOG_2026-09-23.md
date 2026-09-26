@@ -194,4 +194,26 @@ rare, and it is visible, where the silencing was not. Both of Opus's probes
 are now tests. The standalone-decorator test from codex round 2 now expects
 the decorator to be flagged after a foreign star import.
 
-**Residual:** this revert commit has not been reviewed.
+## Sonnet round (3735156, 2159d5e): DRY
+
+A fresh Sonnet sub-agent with the canonical prompt, run at the owner's
+request. It found no defects in either commit and verified both on scratch
+probes. It made two higher-level suggestions, both adopted in one follow-up
+commit, which the owner declared needs no further review:
+
+1. Pin `from sqlalchemy import *` followed by `from widgets import *` as a
+   test (`foreign-star-keeps-sqlalchemy-star`). The behaviour was already
+   correct; the test guards against a repeat of b7d2370.
+2. Say in the docstring that the documented over-reports are deliberate
+   exceptions to the gate's under-report bias. Sonnet named only the
+   star-import one; there are three (`x.Base`, `@x.mapped` shape matching,
+   and foreign star imports), and all three are named.
+
+## Local CI (in place of GitHub Actions)
+
+`ci.yml` cannot be dispatched until it exists on `main`, so its jobs were
+mirrored locally at the owner's request (no new Pythons installed):
+style-gate, minimal-install, and the test job on Python 3.9, 3.12, 3.13 and
+3.14 all passed. **Not run:** Python 3.8, 3.10 and 3.11 (not installed), the
+PostgreSQL job (the local docker daemon panics), and coverage-badge
+(runs on pushes to main only).

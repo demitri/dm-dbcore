@@ -34,10 +34,14 @@ WHAT THIS GATE CANNOT SEE (standing human-review duties):
     skipped. This under-reports rather than over-reporting, deliberately -- a
     missed violation costs a review comment; a gate that cries wolf gets turned
     off. Real model files do not rebind `Table`.
-    Imports are the exception: they are processed in source order (still
-    ignoring scope), so `from widgets import Table` shadows a preceding
-    `from sqlalchemy import *` but a later `from sqlalchemy import Table`
-    takes the name back.
+    Three bullets below are deliberate exceptions to that bias -- accepted
+    over-reports, each where silence would cost more than noise: any `x.Base`
+    counts as a model, `@x.mapped` is matched on shape, and a foreign star
+    import rebinds nothing.
+    Imports are the exception to flat scope: they are processed in source
+    order (still ignoring scope), so `from widgets import Table` shadows a
+    preceding `from sqlalchemy import *` but a later `from sqlalchemy
+    import Table` takes the name back.
   - Model classes that inherit from Base indirectly. A class counts as a model
     only if it names `Base` (or `x.Base`) directly among its bases, so
     `class Mixin(Base)` / `class T(Mixin)` checks Mixin but not T. Classes

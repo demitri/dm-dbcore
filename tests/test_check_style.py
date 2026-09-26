@@ -302,6 +302,11 @@ CASES = [
         "from sqlalchemy import Table\nfrom widgets import *\nTable('widget')\n",
         True, {"no-reflection", "no-schema"}, id="foreign-star-import-keeps-names",
     ),
+    # ...nor the bare-name fallback of an earlier SQLAlchemy star import.
+    pytest.param(
+        "from sqlalchemy import *\nfrom widgets import *\nTable('widget')\n",
+        True, {"no-reflection", "no-schema"}, id="foreign-star-keeps-sqlalchemy-star",
+    ),
     pytest.param(
         "import sqlalchemy as sa\nfrom .base import *\n"
         "class T(Base):\n    '''d'''\n"
